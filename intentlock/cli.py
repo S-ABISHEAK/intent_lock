@@ -5,7 +5,8 @@
   python -m intentlock.cli pending
   python -m intentlock.cli verify                      check the receipt hash chain
   python -m intentlock.cli session [mandate.json]      start a gateway session (default: demo)
-  python -m intentlock.cli reset                       empty the shop, start a fresh demo session
+  python -m intentlock.cli reset [--attacks P1,P6]     empty the shop (optionally with SPEC §14.3
+                                                       attack fixtures), start a fresh demo session
   python -m intentlock.cli timeline                    the session's receipts, one line each
 
 `approve` shows what is being approved (items, total, recipient), and only a "y" sends the
@@ -18,6 +19,7 @@ import argparse
 import json
 import sys
 import time
+import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,18 @@ from intentlock.connector.shop_connector import ShopConnector
 
 DEMO_MANDATE = Path(__file__).resolve().parent.parent / "eval" / "tasks" / "demo_mandate.json"
 Confirm = Callable[[dict[str, Any]], bool]
+
+
+def safe_text(text: Any) -> str:
+    """Shop- and agent-controlled text made inert for a terminal: control, format and bidi
+    characters (ANSI escapes, \\r, U+202E, zero-width) are shown as escapes, never interpreted."""
+    out = []
+    for ch in str(text):
+        if unicodedata.category(ch)[0] == "C":
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def rupees(paise: int) -> str:
@@ -48,8 +62,17 @@ def describe(card: dict[str, Any]) -> str:
     if "total_paise" in s:
         lines.append(
             f"  fees {rupees(s['fees_paise'])}  tax {rupees(s['tax_paise'])}"
-            f"  TOTAL {rupees(s['total_paise'])}  ship to {s['shipping_address_id']}"
+            f"  TOTAL {rupees(s['total_paise'])}"
         )
+        saved = s.get("shipping_address")
+        if saved:
+            lines.append(
+                f"  ship to {s['shipping_address_id']} ({saved['label']}: {saved['line']})"
+            )
+        else:
+            lines.append(
+                f"  ship to {s['shipping_address_id']}  <-- NOT one of your saved addresses"
+            )
         for r in s.get("recurring", []):
             lines.append(
                 f"  RECURRING {r['sku']}: {rupees(r['amount_paise'])} every {r['interval']}"
@@ -57,7 +80,7 @@ def describe(card: dict[str, Any]) -> str:
     elif s.get("args"):
         lines.append(f"  {json.dumps(s['args'], ensure_ascii=False)}")
     lines.append(f"  why you are asked: {', '.join(s.get('reasons', [])) or 'unknown'}")
-    return "\n".join(lines)
+    return "\n".join(safe_text(line) for line in lines)
 
 
 def format_receipt(r: dict[str, Any]) -> str:
@@ -79,7 +102,7 @@ def format_receipt(r: dict[str, Any]) -> str:
         what = p["event"] + (f" executed={p['executed']} {p['reasons']}" if "executed" in p else "")
     else:
         what = json.dumps(p, ensure_ascii=False)[:120]
-    return f"{r['seq']:>4}  {kind:<11} {what}"
+    return safe_text(f"{r['seq']:>4}  {kind:<11} {what}")
 
 
 def ask(card: dict[str, Any]) -> bool:
@@ -103,8 +126,11 @@ def approve_pending(
     for card in cards.json():
         approval_id = card["request"]["approval_id"]
         if not confirm(card):
-            client.post(f"{gateway_url}/approvals/{approval_id}/reject", headers=op)
-            print(f"rejected {approval_id[:8]}")
+            r = client.post(f"{gateway_url}/approvals/{approval_id}/reject", headers=op)
+            if r.is_success:
+                print(f"rejected {approval_id[:8]}")
+            else:
+                print(f"could not reject {approval_id[:8]}: {r.status_code}")
             continue
         signed = client.post(
             f"{approver_url}/sign", json=card["request"], headers={"X-Approver-Token": ui_token}
@@ -118,6 +144,8 @@ def approve_pending(
         if r.status_code == 200:
             approved += 1
             print(f"approved {approval_id[:8]}")
+        else:
+            print(f"gateway did not take the approval for {approval_id[:8]}: {r.status_code}")
     return approved
 
 
@@ -186,7 +214,8 @@ def _run(s: Settings, argv: list[str] | None) -> int:
     sub.add_parser("verify")
     se = sub.add_parser("session")
     se.add_argument("mandate", nargs="?", default=str(DEMO_MANDATE))
-    sub.add_parser("reset")
+    rs = sub.add_parser("reset")
+    rs.add_argument("--attacks", default="", help="comma-separated fixtures, e.g. P1,P2,P5,P6")
     sub.add_parser("timeline")
     args = parser.parse_args(argv)
     op = {"X-Operator-Token": s.operator_token}
@@ -213,7 +242,8 @@ def _run(s: Settings, argv: list[str] | None) -> int:
             print(start_session(s.gateway_url, s.operator_token, Path(args.mandate), c))
             return 0
         if args.cmd == "reset":
-            ShopConnector(s.shop_url).reset_shop()
+            attacks = [a.strip() for a in args.attacks.split(",") if a.strip()]
+            ShopConnector(s.shop_url).reset_shop(attacks=attacks)
             print(start_session(s.gateway_url, s.operator_token, DEMO_MANDATE, c))
             return 0
         if args.cmd == "timeline":

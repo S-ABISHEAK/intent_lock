@@ -27,6 +27,7 @@ from intentlock.config import Settings
 from intentlock.connector.shop_connector import ShopConnector
 from intentlock.db import Database
 from intentlock.llm.client import LLMClient
+from intentlock.provenance.ledger import Ledger
 from intentlock.proxy.mcp_proxy import Gateway
 from intentlock.receipts import ReceiptLog
 from shop.app import create_app as create_shop
@@ -86,6 +87,7 @@ def world(tmp_path):
                 config=config,
                 connector=ShopConnector(shop_url, api_key=SHOP_KEY),
                 receipts=ReceiptLog(db),
+                ledger=Ledger(db),
                 nonces=NonceStore(db),
                 verify_key=APPROVER.verify_key,
                 waiter=broker_waiter(broker),
@@ -215,10 +217,30 @@ def test_config_none_executes_without_approval(world):
     assert len(world.store.orders) == 1
 
 
-def test_intentlock_denies_until_the_taint_step_exists(world):
+def mouse_after_reading_reviews():
+    return [
+        turn(("search_products", {"query": "mouse"})),
+        turn(("get_reviews", {"sku": "MS-1001"})),
+        turn(("get_saved_addresses", {})),
+        turn(("add_to_cart", {"sku": "MS-1001", "qty": 1})),
+        turn(("checkout", {"cart_id": "c1", "shipping_address_id": "ADDR-0001"})),
+        turn(content="done"),
+    ]
+
+
+def test_headline_intentlock_buys_without_a_prompt_where_r2_interrupts(world):
+    """SPEC §18 beat 5, live: same agent, same reads, same ₹1,499 purchase under the limit."""
+    il = run_scenario(world, "intentlock", mouse_after_reading_reviews())
+    assert il.checkout["status"] == "executed" and il.ui.cards == []
+    r2 = run_scenario(world, "r2_session", mouse_after_reading_reviews())
+    assert r2.checkout["status"] == "executed" and len(r2.ui.cards) == 1
+    assert r2.ui.cards[0]["summary"]["reasons"] == ["RULE_OF_TWO"]
+
+
+def test_intentlock_asks_when_the_address_was_never_looked_up(world):
     s = run_scenario(world, "intentlock", buy("LAP-1201"))
-    assert s.checkout == {"status": "denied", "reasons": ["PIPELINE_ERROR"]}
-    assert world.store.orders == []
+    assert s.checkout["status"] == "executed" and len(s.ui.cards) == 1
+    assert set(s.ui.cards[0]["summary"]["reasons"]) == {"APPROVAL_REQUIRED", "UNKNOWN_PROVENANCE"}
 
 
 def test_shop_key_never_leaks_anywhere(world, caplog):

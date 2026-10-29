@@ -6,6 +6,7 @@ UI on Nov 3; today they are polled.
 """
 
 import hmac
+import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -20,7 +21,8 @@ from intentlock.config import Settings
 from intentlock.connector.shop_connector import ShopConnector
 from intentlock.db import Database
 from intentlock.models import Approval, ApprovalRequest, Mandate
-from intentlock.proxy.mcp_proxy import Gateway, build_gateway_mcp
+from intentlock.provenance.ledger import Ledger
+from intentlock.proxy.mcp_proxy import Gateway, GatewayBusy, build_gateway_mcp
 from intentlock.receipts import ReceiptLog, verify_chain
 
 
@@ -68,9 +70,20 @@ def create_app(gateway: Gateway, broker: ApprovalBroker, *, operator_token: str)
 
     @app.post("/session", dependencies=guarded)
     def start_session(req: SessionReq) -> dict:
-        if gateway.busy:
-            raise HTTPException(409, "a commit is in progress; finish or reject it first")
-        return {"session_id": gateway.start_session(req.mandate), "config": gateway.config}
+        try:
+            session_id = gateway.start_session(req.mandate)
+        except GatewayBusy:
+            raise HTTPException(
+                409, "a commit is in progress; finish, reject or end it first"
+            ) from None
+        return {"session_id": session_id, "config": gateway.config}
+
+    @app.post("/session/end", dependencies=guarded)
+    def end_session() -> dict:
+        for r in broker.pending():
+            broker.reject(r.approval_id)
+        gateway.end_session()
+        return {"ok": True}
 
     @app.get("/approvals/pending", dependencies=guarded)
     def pending() -> list[dict]:
@@ -106,6 +119,11 @@ def create_app(gateway: Gateway, broker: ApprovalBroker, *, operator_token: str)
 
 def build_from_env() -> FastAPI:
     """`uvicorn --factory intentlock.api:build_from_env`. One SQLite file per run."""
+    if os.environ.get("APPROVER_UI_TOKEN"):
+        raise RuntimeError(
+            "APPROVER_UI_TOKEN is in the gateway's environment; the gateway must never hold the"
+            " user's approval token (start it with `make dev`, which passes an allow-list)."
+        )
     settings = Settings.from_env()
     db = Database(Path(settings.gateway_db_dir) / f"gateway-{int(time.time())}.sqlite")
     broker = ApprovalBroker()
@@ -114,10 +132,11 @@ def build_from_env() -> FastAPI:
         config=settings.config,
         connector=connector,
         receipts=ReceiptLog(db),
+        ledger=Ledger(db),
         nonces=NonceStore(db),
         verify_key=load_verify_key(settings.approver_public_key_path),
         waiter=broker_waiter(broker),
-        extra_steps={},  # taint (6) lands Oct 31; two-channel (8) / Prompt Guard (9) are features
+        extra_steps={},  # taint (6) is built in; two-channel (8) / Prompt Guard (9) are features
         features=settings.features,
     )
     return create_app(gateway, broker, operator_token=settings.operator_token)

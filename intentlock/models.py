@@ -61,6 +61,11 @@ class ProvenanceRecord(_Model):
     raw: str
     tokens: list[str]  # normalized identifiers extracted (§7.2)
     ts: EpochSeconds
+    # D-028 additions: which forwarded call produced it, the records a derived_untrusted token
+    # came from (§7.4.1 chain), and the Prompt Guard score in per-mille, filled on Nov 1 (D-009).
+    call_seq: StrictInt = 0
+    derived_from: list[str] = []
+    pg_score_permille: Annotated[int, Field(strict=True, ge=0, le=1000)] | None = None
 
 
 class ActionProposal(_Model):

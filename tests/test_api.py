@@ -13,6 +13,7 @@ from intentlock.approvals.broker import ApprovalBroker
 from intentlock.approvals.verify import NonceStore
 from intentlock.connector.shop_connector import ShopConnector
 from intentlock.db import Database
+from intentlock.provenance.ledger import Ledger
 from intentlock.proxy.mcp_proxy import Gateway
 from intentlock.receipts import ReceiptLog
 from shop.app import create_app as create_shop
@@ -39,6 +40,7 @@ def env(tmp_path):
             client=TestClient(create_shop(store, SHOP_KEY), base_url="http://shop"),
         ),
         receipts=ReceiptLog(db),
+        ledger=Ledger(db),
         nonces=NonceStore(db),
         verify_key=APPROVER.verify_key,
         waiter=broker_waiter(broker),
@@ -121,3 +123,33 @@ def test_pending_cards_show_what_the_user_is_approving(env):
     assert ok.status_code == 200
     t.join(10)
     assert len(store.orders) == 1
+
+
+def test_end_session_rejects_pending_cards(env):
+    gw, broker, store = env
+    c = TestClient(create_app(gw, broker, operator_token=OP))
+    c.post("/session", headers=H, json={"mandate": MANDATE})
+    store.add_to_cart("LAP-1201")
+    result = {}
+    t = threading.Thread(
+        target=lambda: result.update(
+            gw.commit(gw.session, "checkout", {"cart_id": "c1", "shipping_address_id": "ADDR-0001"})
+        )
+    )
+    t.start()
+    for _ in range(200):
+        if c.get("/approvals/pending", headers=H).json():
+            break
+        time.sleep(0.01)
+    assert c.post("/session/end", headers=H).status_code == 200
+    t.join(10)
+    assert result["status"] == "not_approved" and store.orders == []
+    assert c.post("/session/end").status_code == 401
+
+
+def test_gateway_refuses_to_start_with_the_ui_token_in_its_environment(monkeypatch):
+    from intentlock.api import build_from_env
+
+    monkeypatch.setenv("APPROVER_UI_TOKEN", "should-not-be-here")
+    with pytest.raises(RuntimeError, match="APPROVER_UI_TOKEN"):
+        build_from_env()

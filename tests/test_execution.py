@@ -302,3 +302,60 @@ def test_expiry_is_judged_after_the_refetch_not_before(store, nonces):
         clock=lambda: t["now"],
     )
     assert codes(res) == ["APPROVAL_EXPIRED"] and store.orders == []
+
+
+def test_mandate_that_expires_during_the_refetch_does_not_execute(store, nonces):
+    t = {"now": NOW}
+
+    class SlowShop(ShopConnector):
+        def get_quote(self, cart_id, shipping_address_id):
+            t["now"] = NOW + 30
+            return super().get_quote(cart_id, shipping_address_id)
+
+    c = SlowShop(
+        "http://shop",
+        api_key=SHOP_KEY,
+        client=TestClient(create_app(store, SHOP_KEY), base_url="http://shop"),
+    )
+    q = c.get_quote("c1", "ADDR-0001")
+    t["now"] = NOW
+    p, d = make_proposal(), decision("REVIEW", q.quote_hash)
+    ap = approved(p, d)
+    res = c.execute(
+        p,
+        d,
+        approval=ap,
+        expected=binding_for(MANDATE, "s1", p, d),
+        verify_key=APPROVER.verify_key,
+        nonces=nonces,
+        clock=lambda: t["now"],
+        mandate_expires_at=NOW + 10,
+    )
+    assert codes(res) == ["MANDATE_EXPIRED"] and store.orders == []
+    assert nonces.consume(ap.nonce, now=NOW) is True  # not burned
+
+
+@pytest.mark.parametrize(
+    "error,uncertain", [(httpx.ReadTimeout, True), (httpx.ConnectError, False)]
+)
+def test_merchant_timeout_after_sending_is_uncertain(store, nonces, error, uncertain):
+    real = TestClient(create_app(store, SHOP_KEY), base_url="http://shop")
+
+    def handler(request):
+        if request.url.path == "/orders":
+            raise error("boom", request=request)
+        r = real.request(
+            request.method, request.url.path, content=request.content, headers=dict(request.headers)
+        )
+        return httpx.Response(
+            r.status_code, content=r.content, headers={"content-type": "application/json"}
+        )
+
+    c = ShopConnector(
+        "http://shop",
+        api_key=SHOP_KEY,
+        client=httpx.Client(transport=httpx.MockTransport(handler), base_url="http://shop"),
+    )
+    p, d, _ = checkout_review(c)
+    res = run(c, nonces, p, d, approved(p, d))
+    assert codes(res) == ["EXECUTION_FAILED"] and not res.executed and res.uncertain is uncertain

@@ -6,6 +6,7 @@ from the quote contents, so re-fetching an unchanged cart gives an identical `qu
 """
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from intentlock.canonical import canonical_hash, compute_quote_hash
 from intentlock.models import Quote, QuoteLine, RecurringTerm
 
 DATA_DIR = Path(__file__).parent / "data"
+ATTACKS = frozenset(p.stem for p in (DATA_DIR / "attacks").glob("P*.json"))
 DEFAULT_CART_ID = "c1"
 PUBLIC_FIELDS = ("sku", "title", "price_paise", "seller_id", "seller_country", "stock", "url")
 
@@ -29,16 +31,29 @@ class StaleQuote(ShopError):
     status = 409
 
 
+class UnknownAttack(ShopError, ValueError):
+    status = 400
+
+
 def _load(name: str) -> Any:
     return json.loads((DATA_DIR / name).read_text(encoding="utf-8"))
 
 
 class Store:
-    def __init__(self, public_url: str = "http://localhost:8001") -> None:
+    def __init__(
+        self, public_url: str = "http://localhost:8001", attacks: Iterable[str] = ()
+    ) -> None:
         self.public_url = public_url.rstrip("/")
-        self.reset()
+        self.reset(attacks=attacks)
 
-    def reset(self) -> None:
+    def reset(self, attacks: Iterable[str] | None = None) -> None:
+        """Back to the initial state. `attacks` picks the SPEC §14.3 fixtures; None keeps them."""
+        if attacks is not None:
+            names = set(attacks)
+            unknown = names - ATTACKS
+            if unknown:
+                raise UnknownAttack(f"unknown attack fixtures: {sorted(unknown)}")
+            self.attacks = frozenset(names)
         catalog = _load("catalog.json")
         account = _load("account.json")
         self._products: dict[str, dict] = {p["sku"]: p for p in catalog["products"]}
@@ -47,11 +62,20 @@ class Store:
         self._orders_history: list[dict] = account["orders"]
         self._inbox: list[dict] = account["inbox"]
         self._cart: dict[str, int] = {}
+        for name in sorted(self.attacks):
+            self._apply_attack(_load(f"attacks/{name}.json"))
         self._quotes: dict[str, Quote] = {}
         self.orders: list[dict] = []
         self.messages: list[dict] = []
         self.deleted_addresses: list[str] = []
         self.cancelled_orders: list[str] = []
+
+    def _apply_attack(self, fixture: dict) -> None:
+        for sku, reviews in fixture.get("reviews", {}).items():
+            self._reviews.setdefault(sku, []).extend(reviews)
+        for sku, fields in fixture.get("products", {}).items():
+            self._products[sku].update(fields)
+        self._inbox.extend(fixture.get("inbox", []))
 
     # -- reads -------------------------------------------------------------------------------
     def search_products(self, query: str = "", max_price: int | None = None) -> list[dict]:
@@ -95,7 +119,7 @@ class Store:
     def read_email(self, email_id: str) -> dict:
         for m in self._inbox:
             if m["id"] == email_id:
-                return dict(m)
+                return {k: m[k] for k in ("id", "from", "subject", "body") if k in m}
         raise NotFound(f"unknown email {email_id}")
 
     # -- cart --------------------------------------------------------------------------------
@@ -221,7 +245,10 @@ class Store:
     def resolve_target(self, kind: str, target_id: str) -> dict:
         """Existence check the connector uses for destructive tools (SPEC §6 step 3)."""
         if kind == "address":
-            found = any(a["id"] == target_id for a in self._addresses)
+            for a in self._addresses:
+                if a["id"] == target_id:
+                    return {"kind": kind, "id": target_id, "label": a["label"], "line": a["line"]}
+            found = False
         elif kind == "order":
             found = any(o["id"] == target_id for o in [*self.orders, *self._orders_history])
         else:

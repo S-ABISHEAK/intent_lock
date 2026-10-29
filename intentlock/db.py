@@ -20,6 +20,24 @@ CREATE TABLE IF NOT EXISTS receipts (
     payload TEXT NOT NULL,
     ts INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS provenance (
+    record_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    call_seq INTEGER NOT NULL,
+    tool TEXT NOT NULL,
+    label TEXT NOT NULL,
+    field_path TEXT NOT NULL,
+    raw TEXT NOT NULL,
+    tokens TEXT NOT NULL,
+    derived_from TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    pg_score_permille INTEGER
+);
+CREATE INDEX IF NOT EXISTS provenance_session ON provenance (session_id);
+CREATE TABLE IF NOT EXISTS call_seq (
+    session_id TEXT PRIMARY KEY,
+    last INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS used_nonces (
     nonce TEXT PRIMARY KEY,
     ts INTEGER NOT NULL

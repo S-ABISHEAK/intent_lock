@@ -47,9 +47,10 @@ FORWARDABLE_TOOLS = frozenset(
 class ConnectorError(Exception):
     """The authoritative shop state could not be obtained or did not check out."""
 
-    def __init__(self, message: str, status: int | None = None) -> None:
+    def __init__(self, message: str, status: int | None = None, maybe_sent: bool = False) -> None:
         super().__init__(message)
         self.status = status
+        self.maybe_sent = maybe_sent  # the request may have reached the shop (timeout after send)
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ class ExecutionResult:
     executed: bool
     reasons: list[Reason] = field(default_factory=list)
     result: dict[str, Any] | None = None
+    uncertain: bool = False  # the merchant may have acted; reconcile before retrying
 
 
 def _refused(code: str, detail: str = "") -> ExecutionResult:
@@ -86,8 +88,12 @@ class ShopConnector:
             resp = self._client.request(
                 method, path, json=json, headers={"X-API-Key": self._api_key}
             )
-        except httpx.HTTPError as exc:
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             raise ConnectorError(f"shop unreachable: {type(exc).__name__}") from None
+        except httpx.HTTPError as exc:  # sent, but no usable answer: the shop may have acted
+            raise ConnectorError(
+                f"shop did not answer: {type(exc).__name__}", maybe_sent=True
+            ) from None
         if resp.status_code != 200:
             raise ConnectorError(f"shop returned {resp.status_code}", status=resp.status_code)
         try:
@@ -119,9 +125,9 @@ class ShopConnector:
             raise ConnectorError("quote is for a different address")
         return quote
 
-    def reset_shop(self) -> None:
-        """Demo/eval only: return the shop to its initial state."""
-        self._request("POST", "/reset")
+    def reset_shop(self, attacks: list[str] | None = None) -> None:
+        """Demo/eval only: initial state, optionally with SPEC §14.3 attack fixtures."""
+        self._request("POST", "/reset", {"attacks": attacks} if attacks is not None else None)
 
     def resolve_target(self, kind: str, target_id: str) -> dict[str, Any]:
         """Confirm a destructive tool's target exists (SPEC §6 step 3)."""
@@ -140,6 +146,7 @@ class ShopConnector:
         verify_key: VerifyKey,
         nonces: NonceStore,
         clock: Callable[[], float],
+        mandate_expires_at: int | None = None,
     ) -> ExecutionResult:
         """Re-fetch, verify, consume, call. Never runs a DENY; a REVIEW needs a signed approval."""
         if decision.outcome == "DENY":
@@ -169,6 +176,8 @@ class ShopConnector:
             return _refused("QUOTE_UNAVAILABLE", str(exc))
 
         now = int(clock())  # read after the re-fetch, so a slow shop can't stretch an approval
+        if mandate_expires_at is not None and now >= mandate_expires_at:
+            return _refused("MANDATE_EXPIRED", "expired during the re-fetch")
         if needs_approval:
             # 2. signature, expiry and binding
             problems = verify_approval(approval, verify_key=verify_key, expected=expected, now=now)
@@ -184,6 +193,12 @@ class ShopConnector:
         except ConnectorError as exc:
             if exc.status == 409:
                 return _refused("QUOTE_CHANGED", "shop refused a stale quote")
+            if exc.maybe_sent:
+                return ExecutionResult(
+                    executed=False,
+                    uncertain=True,
+                    reasons=[make_reason("EXECUTION_FAILED", f"outcome unknown: {exc}")],
+                )
             return _refused("EXECUTION_FAILED", str(exc))
 
     def _commit_call(self, tool: str, args: dict[str, Any], quote: Quote | None) -> dict[str, Any]:

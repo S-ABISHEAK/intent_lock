@@ -134,7 +134,14 @@ def test_agent_prompt_has_no_security_instructions():
 
 def test_only_the_ui_stand_in_knows_the_approver_ui_token():
     """MED 2: the gateway must not be able to obtain approvals without a user click."""
-    allowed = {"intentlock/cli.py", "intentlock/config.py"}
+    allowed = {"intentlock/cli.py", "intentlock/config.py", "intentlock/api.py"}
+    # api.py may name it only to refuse to start when it is present (D-026, review LOW)
+    api = (ROOT / "intentlock/api.py").read_text()
+    mentions = [line for line in api.splitlines() if "APPROVER_UI_TOKEN" in line]
+    assert mentions and all(
+        "environ" in m or "raise" in m or "is in the gateway" in m for m in mentions
+    )
+    assert "approver_ui_token" not in api
     offenders = [
         rel(p)
         for p in py_files()
@@ -171,3 +178,22 @@ def test_make_agent_never_hands_the_agent_shop_or_operator_secrets():
     assert "env -i" in recipe
     for secret in ("SHOP_API_KEY", "GATEWAY_OPERATOR_TOKEN", "APPROVER_UI_TOKEN", "APPROVER_KEY"):
         assert secret not in recipe
+
+
+def test_demo_reset_uses_an_allow_list():
+    makefile = (ROOT / "Makefile").read_text()
+    recipe = makefile.split("\ndemo-reset:")[1].split("\n\n")[0]
+    assert "env -i" in recipe or "$(CLI_ENV)" in recipe
+    assert "MODEL_API_KEY" not in recipe and "APPROVER_KEY" not in recipe
+
+
+def test_no_invisible_or_bidi_characters_in_source():
+    """Trojan-source guard: tests spell hostile characters as escapes, never literally."""
+    import unicodedata
+
+    offenders = [
+        rel(p)
+        for p in py_files()
+        if any(unicodedata.category(ch) == "Cf" for ch in p.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []

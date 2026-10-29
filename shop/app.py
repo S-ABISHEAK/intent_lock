@@ -60,6 +60,10 @@ class ShareReq(BaseModel):
     to: str
 
 
+class ResetReq(BaseModel):
+    attacks: list[str] | None = None  # SPEC §14.3 fixture names; None keeps the current set
+
+
 class EmailReq(BaseModel):
     to: str
     subject: str
@@ -127,9 +131,9 @@ def create_app(store: Store, api_key: str) -> FastAPI:
         return store.state()
 
     @app.post("/reset", dependencies=guarded)
-    def reset() -> dict:
-        store.reset()
-        return {"ok": True}
+    def reset(req: ResetReq | None = None) -> dict:
+        store.reset(attacks=req.attacks if req else None)
+        return {"ok": True, "attacks": sorted(store.attacks)}
 
     app.mount("/", _McpAuth(mcp_app, api_key))
     return app
@@ -137,6 +141,9 @@ def create_app(store: Store, api_key: str) -> FastAPI:
 
 # `uvicorn shop.app:app`. With SHOP_API_KEY unset every guarded route returns 401.
 app = create_app(
-    Store(os.environ.get("SHOP_PUBLIC_URL", "http://localhost:8001")),
+    Store(
+        os.environ.get("SHOP_PUBLIC_URL", "http://localhost:8001"),
+        attacks=[a for a in os.environ.get("SHOP_ATTACKS", "").split(",") if a],
+    ),
     os.environ.get("SHOP_API_KEY", ""),
 )

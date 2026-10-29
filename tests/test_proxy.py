@@ -17,6 +17,7 @@ from intentlock.approvals.broker import ApprovalBroker
 from intentlock.approvals.verify import NonceStore
 from intentlock.connector.shop_connector import ConnectorError, ShopConnector
 from intentlock.db import Database
+from intentlock.provenance.ledger import Ledger
 from intentlock.proxy.mcp_proxy import Gateway, build_gateway_mcp
 from intentlock.receipts import ReceiptLog, verify_chain
 from shop.app import create_app
@@ -26,7 +27,6 @@ from tests.factories import NOW, make_mandate
 
 SHOP_KEY = "test-shop-key-proxy"
 APPROVER = SigningKey.generate()
-TAINT_NOOP = {6: lambda ctx: []}  # test-only stand-in until the taint step lands (Oct 31)
 
 
 class FakeShopTools:
@@ -72,6 +72,7 @@ def make_gw(store, tmp_path):
             config=config,
             connector=ShopConnector("http://shop", api_key=SHOP_KEY, client=shop),
             receipts=ReceiptLog(db, clock=clock),
+            ledger=Ledger(db),
             nonces=NonceStore(db),
             verify_key=APPROVER.verify_key,
             waiter=waiter,
@@ -123,7 +124,7 @@ def test_read_args_with_floats_do_not_break_receipts(make_gw):
 # -- commit tools ------------------------------------------------------------------------------
 @pytest.mark.parametrize("config", ["none", "r2_session", "intentlock"])
 def test_commit_tools_are_never_forwarded_to_the_shop_mcp(make_gw, config):
-    gw = make_gw(config, extra=TAINT_NOOP)
+    gw = make_gw(config)
     call(gw, "add_to_cart", sku="MS-1001", qty=1)
     for tool, args in [
         ("checkout", CHECKOUT),
@@ -215,20 +216,32 @@ def test_rule_of_two_vs_intentlock_on_the_same_benign_session(make_gw, store):
         gw = make_gw(
             config,
             waiter=lambda r, c=config: prompts[c].append(r) or approve_all(r),
-            extra=TAINT_NOOP,
         )
-        call(gw, "get_reviews", sku="MS-1001")
+        call(gw, "search_products", query="mouse")  # where the SKU and seller come from
+        call(gw, "get_reviews", sku="MS-1001")  # untrusted read: sets flag A
+        call(gw, "get_saved_addresses")  # where ADDR-0001 comes from
         call(gw, "add_to_cart", sku="MS-1001", qty=1)
         assert call(gw, "checkout", **CHECKOUT)["status"] == "executed"
     assert len(prompts["r2_session"]) == 1 and prompts["intentlock"] == []
 
 
-def test_addons_count_as_unrequested_until_taint_exists(make_gw, store):
+def test_addon_with_no_clean_source_is_unrequested(make_gw, store):
     gw = make_gw()
     call(gw, "add_to_cart", sku="MS-1001", qty=1)
     call(gw, "add_to_cart", sku="GW-0799", qty=1)  # the agent's say-so is not enough (D-014)
     out = call(gw, "checkout", **CHECKOUT)
     assert out["status"] == "denied" and "UNREQUESTED_ADDON" in out["reasons"]
+
+
+def test_addon_the_user_asked_for_counts_as_requested(make_gw, store):
+    m = make_mandate(
+        user_text="Buy a mouse, gift wrapped (GW-0799) please.", auto_approve_under_paise=10**6
+    )
+    gw = make_gw(mandate=m)
+    call(gw, "add_to_cart", sku="MS-1001", qty=1)
+    call(gw, "add_to_cart", sku="GW-0799", qty=1)
+    out = call(gw, "checkout", **CHECKOUT)
+    assert "UNREQUESTED_ADDON" not in out.get("reasons", [])
 
 
 def test_agent_money_and_float_args_are_dropped_and_recorded(make_gw):
@@ -244,17 +257,55 @@ def test_pipeline_exception_is_denied_with_an_error_receipt(make_gw):
     def boom(ctx):
         raise RuntimeError("taint exploded")
 
-    gw = make_gw("intentlock", extra={6: boom})
+    gw = make_gw("intentlock")
+    gw.extra_steps[6] = boom  # test-only: break the real taint step
     call(gw, "add_to_cart", sku="MS-1001", qty=1)
     out = call(gw, "checkout", **CHECKOUT)
     assert out["status"] == "denied" and out["reasons"] == ["PIPELINE_ERROR"]
     assert "error" in kinds(gw)
 
 
-def test_intentlock_without_the_taint_step_denies(make_gw):
-    gw = make_gw("intentlock", extra={})
-    call(gw, "add_to_cart", sku="MS-1001", qty=1)
-    assert call(gw, "checkout", **CHECKOUT)["reasons"] == ["PIPELINE_ERROR"]
+def test_the_gateway_always_installs_its_own_taint_step(make_gw):
+    with pytest.raises(ValueError):
+        make_gw("intentlock", extra={6: lambda ctx: []})
+    gw = make_gw("intentlock")
+    call(gw, "add_to_cart", sku="MS-1001", qty=1)  # never searched: unknown provenance
+    out = call(gw, "checkout", **CHECKOUT)
+    assert "UNKNOWN_PROVENANCE" in [r["code"] for r in decisions(gw)[-1]["reasons"]]
+    assert out["status"] == "executed"  # approved by the test user after REVIEW
+
+
+def decisions(gw):
+    return [r.payload for r in gw.receipts.all() if r.kind == "decision"]
+
+
+# -- Oct 31: label before delivery ----------------------------------------------------------
+def test_results_reach_the_agent_with_inline_trust_labels(make_gw):
+    gw = make_gw()
+    out = call(gw, "get_product", sku="LAP-1203")
+    assert out["_trust"] == {"description": "untrusted", "seller_note": "untrusted"}
+    assert out["sku"] == "LAP-1203"
+
+
+def test_every_result_is_ledgered_before_the_agent_sees_it(make_gw):
+    gw = make_gw()
+    call(gw, "get_reviews", sku="LAP-1201")
+    sid = gw.session.session_id
+    records = gw.ledger.records(sid)
+    assert any(r.tool == "get_reviews" and r.label.value == "untrusted" for r in records)
+    assert any(r.tool == "user" for r in records)  # the mandate text
+
+
+def test_nothing_unlabeled_reaches_the_agent_when_the_ledger_fails(make_gw, monkeypatch):
+    gw = make_gw()
+
+    def broken(records):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(gw.ledger, "add", broken)
+    out = call(gw, "get_product", sku="LAP-1203")
+    assert out == {"error": "result withheld: provenance could not be recorded"}
+    assert "error" in kinds(gw)
 
 
 def test_waiter_exception_fails_closed(make_gw, store):
@@ -273,6 +324,7 @@ def test_no_session_means_no_tools(store, tmp_path):
         config="none",
         connector=None,
         receipts=ReceiptLog(db),
+        ledger=Ledger(db),
         nonces=NonceStore(db),
         verify_key=APPROVER.verify_key,
         waiter=approve_all,
@@ -360,14 +412,14 @@ def test_session_replaced_while_waiting_for_approval_does_not_execute(make_gw, s
     holder = {}
 
     def replacing_user(req):
-        holder["gw"].start_session(make_mandate(auto_approve_under_paise=10**9))
+        holder["gw"].end_session()  # the operator ends the session; nothing new can start meanwhile
         return approve_all(req)
 
     gw = make_gw(waiter=replacing_user)
     holder["gw"] = gw
     call(gw, "add_to_cart", sku="LAP-1201", qty=1)
     out = call(gw, "checkout", **CHECKOUT)
-    assert out["status"] == "denied" and out["reasons"] == ["MANDATE_UNCONFIRMED"]
+    assert out["status"] == "denied" and out["reasons"] == ["SESSION_REPLACED"]
     assert store.orders == []
 
 
@@ -400,3 +452,87 @@ def test_receipt_failure_after_a_real_execution_still_reports_executed(make_gw, 
     assert [r.payload.get("event") for r in gw.receipts.all() if r.kind == "execution"] == [
         "started"
     ]
+
+
+# -- checkpoint re-review LOWs ------------------------------------------------------------------
+def test_start_session_refuses_while_a_commit_is_waiting(make_gw):
+    from intentlock.proxy.mcp_proxy import GatewayBusy
+
+    holder, seen = {}, {}
+
+    def user(req):
+        with pytest.raises(GatewayBusy):
+            holder["gw"].start_session(make_mandate())
+        seen["refused"] = True
+        return None
+
+    gw = make_gw(waiter=user)
+    holder["gw"] = gw
+    call(gw, "add_to_cart", sku="LAP-1201", qty=1)
+    call(gw, "checkout", **CHECKOUT)
+    assert seen == {"refused": True}
+    gw.start_session(make_mandate())  # free again once nothing is in flight
+
+
+def test_end_session_stops_all_tools(make_gw):
+    gw = make_gw()
+    gw.end_session()
+    assert "error" in call(gw, "search_products", query="x")
+    assert "error" in call(gw, "checkout", **CHECKOUT)
+
+
+def test_card_summary_resolves_the_shipping_address(make_gw, store):
+    seen = {}
+
+    def user(req):
+        seen.update(gw.summaries[req.approval_id])
+        return None
+
+    gw = make_gw(waiter=user)
+    call(gw, "add_to_cart", sku="LAP-1201", qty=1)
+    call(gw, "checkout", **CHECKOUT)
+    assert seen["shipping_address"]["label"] == "Home"
+    seen.clear()
+    call(gw, "checkout", cart_id="c1", shipping_address_id="ADDR-9931")
+    assert seen["shipping_address"] is None and seen["shipping_address_id"] == "ADDR-9931"
+
+
+def test_uncertain_merchant_outcome_is_reported_as_unknown(make_gw, store, monkeypatch):
+    from intentlock.connector.shop_connector import ExecutionResult
+    from intentlock.policy.reasons import make_reason
+
+    gw = make_gw()
+    monkeypatch.setattr(
+        gw.connector,
+        "execute",
+        lambda *a, **k: ExecutionResult(
+            executed=False,
+            uncertain=True,
+            reasons=[make_reason("EXECUTION_FAILED", "outcome unknown")],
+        ),
+    )
+    call(gw, "add_to_cart", sku="LAP-1201", qty=1)
+    out = call(gw, "checkout", **CHECKOUT)
+    assert out["status"] == "unknown" and out["reasons"] == ["EXECUTION_FAILED"]
+    finished = [r for r in gw.receipts.all() if r.kind == "execution"][-1].payload
+    assert finished["executed"] == "unknown"
+
+
+# -- Oct 31 review: commit results and unexpected forwarding failures -----------------------------
+def test_execution_results_are_ledgered_and_labeled(make_gw, store):
+    gw = make_gw()
+    call(gw, "add_to_cart", sku="MS-1001", qty=1)
+    out = call(gw, "checkout", **CHECKOUT)
+    assert out["status"] == "executed" and "_trust" in out["result"]
+    assert any(r.tool == "checkout" for r in gw.ledger.records(gw.session.session_id))
+
+
+def test_unexpected_failure_while_forwarding_is_handled_like_a_shop_error(make_gw):
+    gw = make_gw()
+
+    async def broken(name, args):
+        raise AttributeError("non-text content")
+
+    gw.shop_tools = broken
+    out = call(gw, "get_reviews", sku="LAP-1201")
+    assert "error" in out and "tool_result" in kinds(gw)

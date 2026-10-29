@@ -186,7 +186,8 @@ def test_key_never_appears_in_errors_or_repr_even_if_shop_echoes_it(store):
 
 def test_resolve_target_ok_and_not_found(shop):
     c = connector(shop)
-    assert c.resolve_target("address", "ADDR-0001") == {"kind": "address", "id": "ADDR-0001"}
+    found = c.resolve_target("address", "ADDR-0001")
+    assert (found["kind"], found["id"], found["label"]) == ("address", "ADDR-0001", "Home")
     with pytest.raises(ConnectorError, match="404"):
         c.resolve_target("address", "ADDR-9999")
 
@@ -224,3 +225,12 @@ def test_demo_mandate_file_is_a_valid_confirmed_mandate():
     m = Mandate.model_validate_json(DEMO_MANDATE.read_text())
     assert m.user_confirmed and m.budget_total_paise == 6_000_000
     assert all(g.span in m.user_text for g in m.grants)
+
+
+def test_reset_shop_can_load_attack_fixtures(store, shop):
+    connector(shop).reset_shop(attacks=["P1"])
+    assert store.attacks == {"P1"}
+    connector(shop).reset_shop(attacks=[])
+    assert store.attacks == set()
+    with pytest.raises(ConnectorError, match="400"):
+        connector(shop).reset_shop(attacks=["P99"])

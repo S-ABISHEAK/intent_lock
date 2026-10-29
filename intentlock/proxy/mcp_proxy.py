@@ -3,8 +3,9 @@
 The agent sees only these tools. Read and cart tools are forwarded to the shop through the
 connector (which holds the key); commit tools are never forwarded: they go through the decision
 pipeline, an approval if REVIEW, and connector execution. Every proposal, decision, approval and
-execution is receipted. Field-level labeling, the provenance ledger and taint arrive Oct 31; until
-then tool-level labels feed the Rule-of-Two flags and `intentlock` denies (no taint step yet).
+execution is receipted. Every result is labeled per field and written to the provenance ledger,
+with §7.4.1 propagation, before the agent sees it (invariant 9); if that fails the agent gets an
+error, never unlabeled content. The gateway installs taint step 6 from its own ledger.
 """
 
 import logging
@@ -26,6 +27,9 @@ from intentlock.models import ActionProposal, Approval, ApprovalRequest, Decisio
 from intentlock.policy.pipeline import StepFn, decide
 from intentlock.policy.rule_of_two import SessionFlags
 from intentlock.policy.tools import TOOL_ARGS, sanitize_args
+from intentlock.provenance.labels import annotate
+from intentlock.provenance.ledger import Ledger
+from intentlock.provenance.taint import label_call, make_taint_step, normalize_value, user_records
 from intentlock.receipts import ReceiptLog
 
 log = logging.getLogger(__name__)
@@ -44,6 +48,10 @@ FORWARD_TOOLS = frozenset(
     }
 )
 Waiter = Callable[[ApprovalRequest], Approval | None]
+
+
+class GatewayBusy(Exception):
+    """A commit is in flight; the session can't be replaced until it finishes or is rejected."""
 
 
 class QuoteMoved(Exception):
@@ -79,6 +87,7 @@ class Gateway:
         config: str,
         connector: ShopConnector | None,
         receipts: ReceiptLog,
+        ledger: Ledger,
         nonces: NonceStore,
         verify_key: VerifyKey,
         waiter: Waiter,
@@ -93,7 +102,10 @@ class Gateway:
         self.nonces = nonces
         self.verify_key = verify_key
         self.waiter = waiter
-        self.extra_steps = dict(extra_steps)
+        if 6 in extra_steps:
+            raise ValueError("the gateway installs the taint step from its own ledger")
+        self.ledger = ledger
+        self.extra_steps = {6: make_taint_step(ledger), **extra_steps}
         self.features = frozenset(features)
         self.clock = clock
         self.shop_tools = shop_tools or (connector.call_shop_tool if connector else None)
@@ -113,11 +125,24 @@ class Gateway:
     # -- sessions -------------------------------------------------------------------------------
     def start_session(self, mandate: Mandate | None) -> str:
         session_id = uuid.uuid4().hex
-        self.session = Session(session_id=session_id, mandate=mandate)
+        with self._lock:
+            if self._in_flight:
+                raise GatewayBusy("a commit is in progress")
+            self.session = Session(session_id=session_id, mandate=mandate)
         payload = {"session_id": session_id, "config": self.config}
         payload["mandate"] = mandate.model_dump(mode="json") if mandate else None
+        if mandate is not None:
+            self.ledger.add(user_records(session_id, mandate.user_text, ts=self.now()))
         self.receipts.append("mandate", payload)
         return session_id
+
+    def end_session(self) -> None:
+        """Operator stop: no tools until a new session; waiting commits won't execute."""
+        with self._lock:
+            ended = self.session
+            self.session = None
+        if ended is not None:
+            self.receipts.append("mandate", {"session_id": ended.session_id, "event": "ended"})
 
     # -- entry point from the MCP surface -----------------------------------------------------
     async def call_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -128,18 +153,44 @@ class Gateway:
         return await anyio.to_thread.run_sync(self.commit, self.session, name, args)
 
     async def _forward(self, session: Session, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        record: dict[str, Any] = {"session_id": session.session_id, "tool": name}
-        record["args"] = receipt_safe(args)
+        sid = session.session_id
+        record: dict[str, Any] = {"session_id": sid, "tool": name, "args": receipt_safe(args)}
+        error = False
         try:
             result = await self.shop_tools(name, args)
         except ConnectorError as exc:
-            self.receipts.append("tool_result", {**record, "error": str(exc)})
-            return {"error": str(exc)}
+            result, error = {"error": str(exc)}, True
+        except Exception as exc:  # anything unexpected is handled like a shop error, fail closed
+            log.exception("forwarding %s failed", name)
+            result, error = {"error": f"shop tool failed: {type(exc).__name__}"}, True
+        # Label before delivery (invariant 9): nothing reaches the agent unless it is ledgered.
+        try:
+            seq = self.ledger.next_call_seq(sid)
+            records = label_call(
+                name, args, result, self.ledger.index(sid), session_id=sid, call_seq=seq,
+                ts=self.now(), error=error,
+            )  # fmt: skip
+            self.ledger.add(records)
+        except Exception as exc:
+            log.exception("could not record provenance; withholding the result")
+            self.receipts.append("error", {**record, "error": type(exc).__name__})
+            return {"error": "result withheld: provenance could not be recorded"}
+        record["call_seq"] = seq
+        if error:
+            self.receipts.append("tool_result", {**record, "error": result["error"]})
+            return {"error": result["error"]}
         session.flags = session.flags.after_tool(name)
         if name == "add_to_cart":
             session.added_skus.append(str(args.get("sku")))
         self.receipts.append("tool_result", {**record, "result": receipt_safe(result)})
-        return result
+        return annotate(name, result)
+
+    def requested_skus(self, session: Session) -> frozenset[str]:
+        """D-014/D-029: SKUs the agent added that the user named or a clean merchant lookup
+        showed. The agent adding something is never itself a reason to trust it."""
+        index = self.ledger.index(session.session_id)
+        normalized = (normalize_value(sku) for sku in session.added_skus)
+        return frozenset(sku for sku in normalized if index.chosen_by_user_or_merchant(sku))
 
     # -- commit tools ---------------------------------------------------------------------------
     def _error(self, proposal: ActionProposal, exc: BaseException) -> None:
@@ -190,8 +241,17 @@ class Gateway:
                 total_paise=q.total_paise,
                 recurring=[r.model_dump(mode="json") for r in q.recurring],
                 shipping_address_id=q.shipping_address_id,
+                shipping_address=self._saved_address(q.shipping_address_id),
             )
         return summary
+
+    def _saved_address(self, address_id: str) -> dict[str, str] | None:
+        """The saved address behind an id, or None if it is not one of the user's (P6)."""
+        try:
+            found = self.connector.resolve_target("address", address_id)
+        except ConnectorError:
+            return None
+        return {"label": str(found.get("label", "")), "line": str(found.get("line", ""))}
 
     def _commit(self, session: Session, proposal: ActionProposal) -> dict[str, Any]:
         known = proposal.tool in TOOL_ARGS
@@ -216,7 +276,7 @@ class Gateway:
             self.config,
             connector=self.connector,
             now=self.now(),
-            requested_skus=frozenset(),  # D-014: no add-on counts as requested until taint (Oct 31)
+            requested_skus=self.requested_skus(session),
             extra_steps=self.extra_steps,
             error_sink=self._error,
             flags=session.flags,
@@ -266,7 +326,7 @@ class Gateway:
 
         # Re-check what may have changed while waiting (review LOW: decision-time TOCTOU).
         if self.session is not session:
-            return self._refuse_execution(proposal, "MANDATE_UNCONFIRMED", "session replaced")
+            return self._refuse_execution(proposal, "SESSION_REPLACED")
         if session.mandate is not None and self.config != "none":
             if not session.mandate.user_confirmed:
                 return self._refuse_execution(proposal, "MANDATE_UNCONFIRMED")
@@ -282,20 +342,27 @@ class Gateway:
             verify_key=self.verify_key,
             nonces=self.nonces,
             clock=self.clock,
+            mandate_expires_at=(
+                session.mandate.expires_at
+                if session.mandate is not None and self.config != "none"
+                else None
+            ),
         )
         exec_codes = [r.code for r in result.reasons]
-        response: dict[str, Any] = (
-            {"status": "executed", "reasons": [], "result": result.result}
-            if result.executed
-            else {"status": "denied", "reasons": exec_codes}
-        )
+        if result.executed:
+            shown = self._label_execution(session, proposal, result.result or {})
+            response: dict[str, Any] = {"status": "executed", "reasons": [], "result": shown}
+        elif result.uncertain:
+            response = {"status": "unknown", "reasons": exec_codes}
+        else:
+            response = {"status": "denied", "reasons": exec_codes}
         try:
             self.receipts.append(
                 "execution",
                 {
                     "action_id": proposal.action_id,
                     "event": "finished",
-                    "executed": result.executed,
+                    "executed": "unknown" if result.uncertain else result.executed,
                     "reasons": exec_codes,
                     "result": receipt_safe(result.result),
                 },
@@ -304,6 +371,25 @@ class Gateway:
             log.exception("execution receipt failed after the merchant call")
             response["receipt_error"] = True
         return response
+
+    def _label_execution(
+        self, session: Session, proposal: ActionProposal, result: dict[str, Any]
+    ) -> dict[str, Any] | str:
+        """Merchant results are labeled and ledgered like any other result (invariant 9). They
+        echo the agent's own choices, so they default to UNTRUSTED and never clean anything."""
+        sid = session.session_id
+        try:
+            seq = self.ledger.next_call_seq(sid)
+            self.ledger.add(
+                label_call(
+                    proposal.tool, {}, result, self.ledger.index(sid), session_id=sid,
+                    call_seq=seq, ts=self.now(),
+                )
+            )  # fmt: skip
+        except Exception:
+            log.exception("could not record provenance for an execution result")
+            return "withheld: provenance could not be recorded (the action did execute)"
+        return annotate(proposal.tool, result)
 
     def _refuse_execution(self, proposal: ActionProposal, code: str, detail: str = "") -> dict:
         self.receipts.append(

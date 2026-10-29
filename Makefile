@@ -80,8 +80,12 @@ report:
 	@echo "not implemented yet: see SPEC §13.3"; exit 1
 
 # Empty the shop and start a fresh gateway session with the demo mandate (services must be up).
+# `make demo-reset ATTACKS=P1,P6` loads SPEC §14.3 attack fixtures for a live attack demo.
+ATTACKS ?=
 demo-reset:
-	@set -a; [ -f .env ] && . ./.env; set +a; $(PY) -m intentlock.cli reset
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	$(CLI_ENV) SHOP_URL="$$SHOP_URL" SHOP_API_KEY="$$SHOP_API_KEY" \
+	  $(PY) -m intentlock.cli reset --attacks "$(ATTACKS)"
 
 # One muse-spark structured-output call. Sources .env in this shell only and passes just the MODEL_*
 # variables on, so SHOP_API_KEY never reaches the process. The file is never printed.
