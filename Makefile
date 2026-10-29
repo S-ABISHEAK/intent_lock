@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: setup keys dev test lint eval-g eval-e report demo-reset smoke
+.PHONY: setup keys doctor dev session approve agent test lint eval-g eval-e report demo-reset smoke
 
 setup:
 	uv venv --python 3.11 .venv
@@ -9,18 +9,55 @@ setup:
 keys:
 	$(PY) -m approver.keys keys
 
-# Shop (8001), approver (8002) and gateway (8000). Each process gets only the secrets it may hold:
-# the approver never sees SHOP_API_KEY and the gateway never sees the approver key (invariant 7).
-# The UI (5173) joins on Nov 3.
+# Which required .env names are set (never prints values) and whether the services are up.
+REQUIRED = MODEL_API_KEY SHOP_API_KEY GATEWAY_OPERATOR_TOKEN APPROVER_UI_TOKEN CONFIG
+doctor:
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	[ -f .env ] || echo ".env: MISSING (copy .env.example to .env)"; \
+	for v in $(REQUIRED); do eval "val=\$$$$v"; [ -n "$$val" ] && echo "$$v: set" || echo "$$v: MISSING"; done; \
+	[ -f "$${APPROVER_PUBLIC_KEY_PATH:-keys/approver.pub}" ] && echo "approver keys: present" || echo "approver keys: MISSING (run make keys)"; \
+	for u in "$${SHOP_URL:-http://localhost:8001}" "$${APPROVER_URL:-http://localhost:8002}" "$${GATEWAY_URL:-http://localhost:8000}"; do \
+	  printf "%s/health: " "$$u"; curl -s -m 2 "$$u/health" || printf "not running"; echo; done
+
+# Shop (8001), approver (8002) and gateway (8000). Each process starts from an empty environment
+# and gets an explicit allow-list: the approver never sees SHOP_API_KEY, the gateway never sees the
+# approver key path or the UI token (invariant 7, D-026). The UI (5173) joins on Nov 3.
 dev:
 	@set -a; [ -f .env ] && . ./.env; set +a; trap 'kill 0' INT TERM EXIT; \
-	env -u MODEL_API_KEY -u APPROVER_KEY_PATH -u HF_TOKEN \
+	env -i PATH="$$PATH" HOME="$$HOME" SHOP_API_KEY="$$SHOP_API_KEY" \
 	  $(PY) -m uvicorn shop.app:app --port 8001 & \
-	env -u SHOP_API_KEY -u MODEL_API_KEY -u WEAK_MODEL_API_KEY -u HF_TOKEN \
+	env -i PATH="$$PATH" HOME="$$HOME" APPROVER_UI_TOKEN="$$APPROVER_UI_TOKEN" \
+	  APPROVER_KEY_PATH="$${APPROVER_KEY_PATH:-keys/approver.key}" \
 	  $(PY) -m uvicorn --factory approver.app:build_from_env --port 8002 & \
-	env -u APPROVER_KEY_PATH \
+	env -i PATH="$$PATH" HOME="$$HOME" SHOP_API_KEY="$$SHOP_API_KEY" SHOP_URL="$$SHOP_URL" \
+	  CONFIG="$$CONFIG" GATEWAY_OPERATOR_TOKEN="$$GATEWAY_OPERATOR_TOKEN" \
+	  APPROVER_PUBLIC_KEY_PATH="$$APPROVER_PUBLIC_KEY_PATH" GATEWAY_DB_DIR="$$GATEWAY_DB_DIR" \
+	  TWO_CHANNEL="$$TWO_CHANNEL" PROMPT_GUARD="$$PROMPT_GUARD" MODEL_API_KEY="$$MODEL_API_KEY" \
+	  MODEL_BASE_URL="$$MODEL_BASE_URL" MODEL_ID="$$MODEL_ID" LLM_CACHE_DIR="$$LLM_CACHE_DIR" \
+	  HF_TOKEN="$$HF_TOKEN" \
 	  $(PY) -m uvicorn --factory intentlock.api:build_from_env --port 8000 & \
 	wait
+
+# Operator commands: always the project venv, each with only the variables it needs.
+CLI_ENV = env -i PATH="$$PATH" HOME="$$HOME" GATEWAY_URL="$$GATEWAY_URL" APPROVER_URL="$$APPROVER_URL" \
+	GATEWAY_OPERATOR_TOKEN="$$GATEWAY_OPERATOR_TOKEN" APPROVER_UI_TOKEN="$$APPROVER_UI_TOKEN"
+
+session:
+	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli session
+
+# The user's side of an approval: shows each card and asks y/N.
+approve:
+	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli approve --follow
+
+# The agent gets the gateway URL and model settings only, never shop or operator secrets.
+TASK ?= Buy a wireless mouse under ₹2,000
+agent:
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	env -i PATH="$$PATH" HOME="$$HOME" GATEWAY_URL="$$GATEWAY_URL" MODEL_API_KEY="$$MODEL_API_KEY" \
+	  MODEL_BASE_URL="$$MODEL_BASE_URL" MODEL_ID="$$MODEL_ID" MODEL_ID_EVAL="$$MODEL_ID_EVAL" \
+	  LLM_CACHE_DIR="$$LLM_CACHE_DIR" WEAK_MODEL_BASE_URL="$$WEAK_MODEL_BASE_URL" \
+	  WEAK_MODEL_API_KEY="$$WEAK_MODEL_API_KEY" WEAK_MODEL_ID="$$WEAK_MODEL_ID" \
+	  $(PY) -m agent.run --task "$(TASK)"
 
 test:
 	$(PY) -m pytest -q

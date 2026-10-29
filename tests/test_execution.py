@@ -77,7 +77,7 @@ def run(conn, nonces, proposal, d, approval=None, now=NOW, session="s1"):
         expected=expected,
         verify_key=APPROVER.verify_key,
         nonces=nonces,
-        now=now,
+        clock=lambda: now,
     )
 
 
@@ -275,3 +275,30 @@ def test_the_shop_key_never_appears_in_execution_results(conn, nonces):
     p, d, _ = checkout_review(conn)
     res = run(conn, nonces, p, d, approved(p, d))
     assert SHOP_KEY not in repr(res)
+
+
+def test_expiry_is_judged_after_the_refetch_not_before(store, nonces):
+    """An approval that expires while the quote is being re-fetched must not execute."""
+    t = {"now": NOW}
+
+    class SlowShop(ShopConnector):
+        def get_quote(self, cart_id, shipping_address_id):
+            t["now"] = NOW + 125  # the re-fetch took us past expires_at (NOW + 120)
+            return super().get_quote(cart_id, shipping_address_id)
+
+    shop = TestClient(create_app(store, SHOP_KEY), base_url="http://shop")
+    c = SlowShop("http://shop", api_key=SHOP_KEY, client=shop)
+    q = c.get_quote("c1", "ADDR-0001")
+    t["now"] = NOW
+    p, d = make_proposal(), decision("REVIEW", q.quote_hash)
+    ap = approved(p, d)
+    res = c.execute(
+        p,
+        d,
+        approval=ap,
+        expected=binding_for(MANDATE, "s1", p, d),
+        verify_key=APPROVER.verify_key,
+        nonces=nonces,
+        clock=lambda: t["now"],
+    )
+    assert codes(res) == ["APPROVAL_EXPIRED"] and store.orders == []

@@ -1,21 +1,25 @@
-"""Small operator CLI (SPEC §10 stand-in until the UI exists on Nov 3).
+"""Operator CLI: the stand-in for the UI until Nov 3 (SPEC §10; D-023, D-026).
 
-  python -m intentlock.cli approve [--watch]   act as the user clicking Approve on pending cards
+  python -m intentlock.cli approve [--follow] [--yes]   show each pending card and ask y/N
   python -m intentlock.cli reject <id>
   python -m intentlock.cli pending
-  python -m intentlock.cli verify              check the receipt hash chain
-  python -m intentlock.cli session [mandate.json]   start a gateway session (default: demo mandate)
-  python -m intentlock.cli reset               empty the shop and start a fresh demo session
+  python -m intentlock.cli verify                      check the receipt hash chain
+  python -m intentlock.cli session [mandate.json]      start a gateway session (default: demo)
+  python -m intentlock.cli reset                       empty the shop, start a fresh demo session
 
-The CLI asks the approver to sign, then hands the signature to the gateway, exactly as the UI will.
-It never sees a private key or the shop key.
+`approve` shows what is being approved (items, total, recipient), and only a "y" sends the
+request to the approver with the UI token, then hands the signature to the gateway. `--yes`
+signs without asking and is meant for scripted runs only; it can't be combined with `--follow`.
+The CLI never sees a private key or the shop key.
 """
 
 import argparse
 import json
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -23,36 +27,136 @@ from intentlock.config import Settings
 from intentlock.connector.shop_connector import ShopConnector
 
 DEMO_MANDATE = Path(__file__).resolve().parent.parent / "eval" / "tasks" / "demo_mandate.json"
+Confirm = Callable[[dict[str, Any]], bool]
 
 
-def start_session(gateway_url: str, mandate_path: Path, client: httpx.Client) -> str:
+def rupees(paise: int) -> str:
+    return f"₹{paise // 100:,}.{paise % 100:02d}"
+
+
+def describe(card: dict[str, Any]) -> str:
+    s = card.get("summary") or {}
+    req = card["request"]
+    lines = [f"Approval {req['approval_id'][:8]}: {s.get('tool', req['action_tool'])}"]
+    for line in s.get("lines", []):
+        tag = " (add-on)" if line.get("is_addon") else ""
+        lines.append(
+            f"  {line['qty']} x {line['title']} [{line['sku']}] {rupees(line['unit_paise'])}"
+            f"  seller {line['seller_id']} ({line['seller_country']}){tag}"
+        )
+    if "total_paise" in s:
+        lines.append(
+            f"  fees {rupees(s['fees_paise'])}  tax {rupees(s['tax_paise'])}"
+            f"  TOTAL {rupees(s['total_paise'])}  ship to {s['shipping_address_id']}"
+        )
+        for r in s.get("recurring", []):
+            lines.append(
+                f"  RECURRING {r['sku']}: {rupees(r['amount_paise'])} every {r['interval']}"
+            )
+    elif s.get("args"):
+        lines.append(f"  {json.dumps(s['args'], ensure_ascii=False)}")
+    lines.append(f"  why you are asked: {', '.join(s.get('reasons', [])) or 'unknown'}")
+    return "\n".join(lines)
+
+
+def ask(card: dict[str, Any]) -> bool:
+    print(describe(card))
+    return input("Approve? [y/N] ").strip().lower() == "y"
+
+
+def approve_pending(
+    gateway_url: str,
+    approver_url: str,
+    client: httpx.Client,
+    *,
+    operator_token: str,
+    ui_token: str,
+    confirm: Confirm = ask,
+) -> int:
+    op = {"X-Operator-Token": operator_token}
+    approved = 0
+    cards = client.get(f"{gateway_url}/approvals/pending", headers=op)
+    cards.raise_for_status()
+    for card in cards.json():
+        approval_id = card["request"]["approval_id"]
+        if not confirm(card):
+            client.post(f"{gateway_url}/approvals/{approval_id}/reject", headers=op)
+            print(f"rejected {approval_id[:8]}")
+            continue
+        signed = client.post(
+            f"{approver_url}/sign", json=card["request"], headers={"X-Approver-Token": ui_token}
+        )
+        if signed.status_code != 200:
+            print(f"approver refused {approval_id[:8]}: {signed.status_code}")
+            continue
+        r = client.post(
+            f"{gateway_url}/approvals/{approval_id}/signature", json=signed.json(), headers=op
+        )
+        if r.status_code == 200:
+            approved += 1
+            print(f"approved {approval_id[:8]}")
+    return approved
+
+
+def start_session(
+    gateway_url: str, operator_token: str, mandate_path: Path, client: httpx.Client
+) -> str:
     mandate = json.loads(mandate_path.read_text(encoding="utf-8"))
-    r = client.post(f"{gateway_url}/session", json={"mandate": mandate})
+    r = client.post(
+        f"{gateway_url}/session",
+        json={"mandate": mandate},
+        headers={"X-Operator-Token": operator_token},
+    )
     r.raise_for_status()
     return r.json()["session_id"]
 
 
-def approve_pending(gateway_url: str, approver_url: str, client: httpx.Client | None = None) -> int:
-    c = client or httpx.Client(timeout=10)
-    approved = 0
-    for req in c.get(f"{gateway_url}/approvals/pending").json():
-        signed = c.post(f"{approver_url}/sign", json=req)
-        if signed.status_code != 200:
-            print(f"approver refused {req['approval_id']}: {signed.status_code}")
-            continue
-        r = c.post(f"{gateway_url}/approvals/{req['approval_id']}/signature", json=signed.json())
-        if r.status_code == 200:
-            approved += 1
-            print(f"approved {req['approval_id']} ({req['action_tool']})")
-    return approved
+def explain(exc: httpx.HTTPError, s: Settings) -> str:
+    if isinstance(exc, httpx.ConnectError):
+        return f"cannot reach the services ({exc.request.url}). Is `make dev` running?"
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
+        url = str(exc.request.url)
+        if url.startswith(s.approver_url):
+            return (
+                "the approver refused the UI token: APPROVER_UI_TOKEN in .env must match the one"
+                " `make dev` started with (restart `make dev` after editing .env)."
+            )
+        return (
+            "the gateway refused the operator token: GATEWAY_OPERATOR_TOKEN in .env must match"
+            " the one `make dev` started with (restart `make dev` after editing .env)."
+        )
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 409:
+        return "the gateway is busy with a pending approval; approve or reject it first."
+    return f"request failed: {exc}"
 
 
 def main(argv: list[str] | None = None) -> int:
     s = Settings.from_env()
+    missing = [
+        name
+        for name, value in (
+            ("GATEWAY_OPERATOR_TOKEN", s.operator_token),
+            ("APPROVER_UI_TOKEN", s.approver_ui_token),
+        )
+        if not value
+    ]
+    if missing:
+        print(f"not set in .env: {', '.join(missing)} (then restart `make dev`)")
+        return 2
+    try:
+        return _run(s, argv)
+    except httpx.HTTPError as exc:
+        print(f"error: {explain(exc, s)}")
+        return 1
+
+
+def _run(s: Settings, argv: list[str] | None) -> int:
     parser = argparse.ArgumentParser(prog="intentlock")
     sub = parser.add_subparsers(dest="cmd", required=True)
     ap = sub.add_parser("approve")
-    ap.add_argument("--watch", action="store_true", help="keep approving until interrupted")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--follow", action="store_true", help="keep watching for new cards")
+    mode.add_argument("--yes", action="store_true", help="approve without asking (scripts only)")
     rj = sub.add_parser("reject")
     rj.add_argument("approval_id")
     sub.add_parser("pending")
@@ -61,31 +165,38 @@ def main(argv: list[str] | None = None) -> int:
     se.add_argument("mandate", nargs="?", default=str(DEMO_MANDATE))
     sub.add_parser("reset")
     args = parser.parse_args(argv)
+    op = {"X-Operator-Token": s.operator_token}
 
     with httpx.Client(timeout=10) as c:
         if args.cmd == "approve":
+            confirm: Confirm = (lambda card: True) if args.yes else ask
             while True:
-                approve_pending(s.gateway_url, s.approver_url, c)
-                if not args.watch:
+                approve_pending(
+                    s.gateway_url,
+                    s.approver_url,
+                    c,
+                    operator_token=s.operator_token,
+                    ui_token=s.approver_ui_token,
+                    confirm=confirm,
+                )
+                if not args.follow:
                     return 0
                 time.sleep(0.5)
         if args.cmd == "reject":
-            return (
-                0
-                if c.post(f"{s.gateway_url}/approvals/{args.approval_id}/reject").is_success
-                else 1
-            )
+            r = c.post(f"{s.gateway_url}/approvals/{args.approval_id}/reject", headers=op)
+            return 0 if r.is_success else 1
         if args.cmd == "session":
-            print(start_session(s.gateway_url, Path(args.mandate), c))
+            print(start_session(s.gateway_url, s.operator_token, Path(args.mandate), c))
             return 0
         if args.cmd == "reset":
             ShopConnector(s.shop_url).reset_shop()
-            print(start_session(s.gateway_url, DEMO_MANDATE, c))
+            print(start_session(s.gateway_url, s.operator_token, DEMO_MANDATE, c))
             return 0
         if args.cmd == "pending":
-            print(json.dumps(c.get(f"{s.gateway_url}/approvals/pending").json(), indent=2))
+            for card in c.get(f"{s.gateway_url}/approvals/pending", headers=op).json():
+                print(describe(card))
             return 0
-        print(json.dumps(c.get(f"{s.gateway_url}/receipts/verify").json(), indent=2))
+        print(json.dumps(c.get(f"{s.gateway_url}/receipts/verify", headers=op).json(), indent=2))
     return 0
 
 

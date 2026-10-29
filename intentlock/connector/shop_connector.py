@@ -9,6 +9,7 @@ approval checks, nonce consume, place_order) arrives with the approvals on Oct 3
 
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote as urlquote
@@ -138,7 +139,7 @@ class ShopConnector:
         expected: Binding | None,
         verify_key: VerifyKey,
         nonces: NonceStore,
-        now: int,
+        clock: Callable[[], float],
     ) -> ExecutionResult:
         """Re-fetch, verify, consume, call. Never runs a DENY; a REVIEW needs a signed approval."""
         if decision.outcome == "DENY":
@@ -167,6 +168,7 @@ class ShopConnector:
         except ConnectorError as exc:
             return _refused("QUOTE_UNAVAILABLE", str(exc))
 
+        now = int(clock())  # read after the re-fetch, so a slow shop can't stretch an approval
         if needs_approval:
             # 2. signature, expiry and binding
             problems = verify_approval(approval, verify_key=verify_key, expected=expected, now=now)

@@ -130,3 +130,44 @@ def test_agent_prompt_has_no_security_instructions():
 
     words = ("inject", "untrusted", "security", "ignore instructions", "malicious", "verify")
     assert not [w for w in words if w in SYSTEM_PROMPT.lower()]
+
+
+def test_only_the_ui_stand_in_knows_the_approver_ui_token():
+    """MED 2: the gateway must not be able to obtain approvals without a user click."""
+    allowed = {"intentlock/cli.py", "intentlock/config.py"}
+    offenders = [
+        rel(p)
+        for p in py_files()
+        if rel(p).startswith(("intentlock/", "agent/"))
+        and rel(p) not in allowed
+        and ("approver_ui_token" in p.read_text() or "APPROVER_UI_TOKEN" in p.read_text())
+    ]
+    assert offenders == []
+
+
+def test_agent_never_knows_the_operator_token():
+    offenders = [
+        rel(p)
+        for p in py_files()
+        if rel(p).startswith("agent/")
+        and ("operator_token" in p.read_text() or "GATEWAY_OPERATOR_TOKEN" in p.read_text())
+    ]
+    assert offenders == []
+
+
+def test_make_dev_uses_an_allow_list_per_process():
+    makefile = (ROOT / "Makefile").read_text()
+    dev = makefile.split("\ndev:")[1].split("\n\n")[0]
+    assert dev.count("env -i") == 3
+    approver_line = [part for part in dev.split("env -i") if "approver.app" in part][0]
+    assert "SHOP_API_KEY" not in approver_line and "MODEL_API_KEY" not in approver_line
+    gateway_line = [part for part in dev.split("env -i") if "intentlock.api" in part][0]
+    assert "APPROVER_KEY_PATH" not in gateway_line and "APPROVER_UI_TOKEN" not in gateway_line
+
+
+def test_make_agent_never_hands_the_agent_shop_or_operator_secrets():
+    makefile = (ROOT / "Makefile").read_text()
+    recipe = makefile.split("\nagent:")[1].split("\n\n")[0]
+    assert "env -i" in recipe
+    for secret in ("SHOP_API_KEY", "GATEWAY_OPERATOR_TOKEN", "APPROVER_UI_TOKEN", "APPROVER_KEY"):
+        assert secret not in recipe

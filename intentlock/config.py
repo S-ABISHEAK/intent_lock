@@ -29,6 +29,8 @@ class Settings:
     gateway_db_dir: str = ".cache/runs"
     approver_public_key_path: str = "keys/approver.pub"
     features: frozenset[int] = frozenset()  # optional pipeline steps 8-9 (D-021)
+    operator_token: str = field(default="", repr=False)  # gateway REST; never given to the agent
+    approver_ui_token: str = field(default="", repr=False)  # UI click proof; never in the gateway
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
@@ -52,6 +54,8 @@ class Settings:
             gateway_db_dir=e.get("GATEWAY_DB_DIR") or cls.gateway_db_dir,
             approver_public_key_path=e.get("APPROVER_PUBLIC_KEY_PATH")
             or cls.approver_public_key_path,
+            operator_token=e.get("GATEWAY_OPERATOR_TOKEN", ""),
+            approver_ui_token=e.get("APPROVER_UI_TOKEN", ""),
             features=frozenset(
                 step
                 for step, var in ((8, "TWO_CHANNEL"), (9, "PROMPT_GUARD"))

@@ -113,3 +113,23 @@ def test_receipts_survive_reopening_the_database(tmp_path):
     again = ReceiptLog(Database(tmp_path / "run.sqlite"), clock=lambda: 2)
     again.append("execution", {"ok": True})
     assert verify_chain(again.all()).ok and len(again.all()) == 3
+
+
+def test_concurrent_database_construction_never_fails(tmp_path):
+    errors, barrier = [], threading.Barrier(20, timeout=10)
+
+    def worker(path):
+        barrier.wait()
+        try:
+            Database(path)
+        except Exception as exc:  # recorded, not swallowed: the assertion below fails on it
+            errors.append(exc)
+
+    for i in range(150):  # the race hits new files and is rare, so create many
+        path = tmp_path / f"shared-{i}.sqlite"
+        threads = [threading.Thread(target=worker, args=(path,)) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    assert errors == []

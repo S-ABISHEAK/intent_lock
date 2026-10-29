@@ -35,6 +35,9 @@ from tests.factories import make_mandate
 from tests.servers import serve
 
 SHOP_KEY = "e2e-shop-key-must-never-leak-7f3a"
+OP = "e2e-operator-token"
+UI_TOKEN = "e2e-ui-token"
+OPH = {"X-Operator-Token": OP}
 APPROVER = SigningKey.generate()
 MANDATE = make_mandate(expires_at=4_102_444_800, auto_approve_under_paise=200_000)
 
@@ -73,7 +76,7 @@ def world(tmp_path):
     store = Store()
     with (
         serve(create_shop(store, SHOP_KEY)) as shop_url,
-        serve(create_approver(APPROVER)) as approver_url,
+        serve(create_approver(APPROVER, ui_token=UI_TOKEN)) as approver_url,
     ):
 
         def gateway(config):
@@ -89,7 +92,7 @@ def world(tmp_path):
                 extra_steps={},
                 features=frozenset(),
             )
-            return create_gateway(gw, broker)
+            return create_gateway(gw, broker, operator_token=OP)
 
         yield SimpleNamespace(
             store=store, shop_url=shop_url, approver_url=approver_url, gateway=gateway, tmp=tmp_path
@@ -99,30 +102,45 @@ def world(tmp_path):
 class UI(threading.Thread):
     """Plays the user: approves every pending card (optionally doing something first)."""
 
-    def __init__(self, gateway_url, approver_url, before=None):
+    def __init__(self, gateway_url, approver_url, before=None, decide=lambda card: True):
         super().__init__(daemon=True)
         self.gateway_url, self.approver_url, self.before = gateway_url, approver_url, before
+        self.decide, self.cards = decide, []
         self.stop, self.approved = threading.Event(), 0
+
+    def confirm(self, card):
+        self.cards.append(card)
+        return self.decide(card)
 
     def run(self):
         with httpx.Client(timeout=10) as c:
             while not self.stop.is_set():
-                if self.before and c.get(f"{self.gateway_url}/approvals/pending").json():
+                if (
+                    self.before
+                    and c.get(f"{self.gateway_url}/approvals/pending", headers=OPH).json()
+                ):
                     self.before()
                     self.before = None
-                self.approved += approve_pending(self.gateway_url, self.approver_url, c)
+                self.approved += approve_pending(
+                    self.gateway_url,
+                    self.approver_url,
+                    c,
+                    operator_token=OP,
+                    ui_token=UI_TOKEN,
+                    confirm=self.confirm,
+                )
                 time.sleep(0.05)
 
 
-def run_scenario(w, config, turns, before_approve=None):
+def run_scenario(w, config, turns, before_approve=None, decide=lambda card: True):
     llm_fake = ScriptedLLM(turns)
     llm = LLMClient(Settings(llm_cache_dir=str(w.tmp / "llm")), client=llm_fake)
     w.store.reset()
     with serve(w.gateway(config)) as gw_url:
         httpx.post(
-            f"{gw_url}/session", json={"mandate": MANDATE.model_dump(mode="json")}
+            f"{gw_url}/session", json={"mandate": MANDATE.model_dump(mode="json")}, headers=OPH
         ).raise_for_status()
-        ui = UI(gw_url, w.approver_url, before_approve)
+        ui = UI(gw_url, w.approver_url, before_approve, decide)
         ui.start()
         try:
             run = asyncio.run(
@@ -137,8 +155,8 @@ def run_scenario(w, config, turns, before_approve=None):
         finally:
             ui.stop.set()
             ui.join(5)
-        receipts = httpx.get(f"{gw_url}/receipts").json()
-        verify = httpx.get(f"{gw_url}/receipts/verify").json()
+        receipts = httpx.get(f"{gw_url}/receipts", headers=OPH).json()
+        verify = httpx.get(f"{gw_url}/receipts/verify", headers=OPH).json()
     checkout = json.loads(run.tool_calls[-1]["result"])
     return SimpleNamespace(
         run=run, receipts=receipts, verify=verify, checkout=checkout, ui=ui, llm=llm_fake
@@ -167,7 +185,8 @@ def test_review_approve_execute_receipt(world):
         "decision",
         "approval",
         "approval",
-        "execution",
+        "execution",  # started
+        "execution",  # finished
     ]
     assert s.verify["ok"] is True
 
@@ -212,3 +231,10 @@ def test_shop_key_never_leaks_anywhere(world, caplog):
         json.dumps([c for c in s.run.tool_calls]),
     ]
     assert not [h for h in haystacks if SHOP_KEY in h]
+
+
+def test_user_sees_the_quote_and_declining_executes_nothing(world):
+    s = run_scenario(world, "r2_session", buy("LAP-1201"), decide=lambda card: False)
+    assert s.checkout["status"] == "not_approved" and world.store.orders == []
+    card = s.ui.cards[0]["summary"]
+    assert card["total_paise"] == 5_499_900 and card["lines"][0]["title"] == "Asus Vivobook 15"

@@ -1,14 +1,17 @@
 """Gateway app on port 8000 (SPEC §3, §16): the agent's MCP endpoint at /mcp, plus the REST surface
 the UI (and, until the UI exists, `python -m intentlock.cli`) uses for sessions, the approval inbox
-and receipts. Approval requests are pushed over SSE with the UI on Nov 3; today they are polled.
+and receipts. Every REST route except /health needs `X-Operator-Token`, a secret the agent process
+never gets; an unset token locks them all (D-026). Approval requests are pushed over SSE with the
+UI on Nov 3; today they are polled.
 """
 
+import hmac
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from intentlock.approvals.broker import ApprovalBroker
@@ -35,7 +38,7 @@ def broker_waiter(broker: ApprovalBroker, clock=time.time):
     return wait
 
 
-def create_app(gateway: Gateway, broker: ApprovalBroker) -> FastAPI:
+def create_app(gateway: Gateway, broker: ApprovalBroker, *, operator_token: str) -> FastAPI:
     mcp = build_gateway_mcp(gateway)
     mcp_app = mcp.streamable_http_app()
 
@@ -44,37 +47,55 @@ def create_app(gateway: Gateway, broker: ApprovalBroker) -> FastAPI:
         async with mcp.session_manager.run():
             yield
 
-    app = FastAPI(title="IntentLock gateway", lifespan=lifespan)
+    app = FastAPI(
+        title="IntentLock gateway",
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+
+    def operator(x_operator_token: str | None = Header(default=None)) -> None:
+        supplied = (x_operator_token or "").encode("utf-8", "surrogatepass")
+        if not operator_token or not hmac.compare_digest(operator_token.encode(), supplied):
+            raise HTTPException(401, "operator token required")
+
+    guarded = [Depends(operator)]
 
     @app.get("/health")
     def health() -> dict:
-        return {"ok": True, "config": gateway.config}
+        return {"ok": True, "config": gateway.config, "operator_token_set": bool(operator_token)}
 
-    @app.post("/session")
+    @app.post("/session", dependencies=guarded)
     def start_session(req: SessionReq) -> dict:
+        if gateway.busy:
+            raise HTTPException(409, "a commit is in progress; finish or reject it first")
         return {"session_id": gateway.start_session(req.mandate), "config": gateway.config}
 
-    @app.get("/approvals/pending")
+    @app.get("/approvals/pending", dependencies=guarded)
     def pending() -> list[dict]:
-        return [r.model_dump() for r in broker.pending()]
+        return [
+            {"request": r.model_dump(), "summary": gateway.summaries.get(r.approval_id)}
+            for r in broker.pending()
+        ]
 
-    @app.post("/approvals/{approval_id}/signature")
+    @app.post("/approvals/{approval_id}/signature", dependencies=guarded)
     def submit(approval_id: str, approval: Approval) -> dict:
         if not broker.submit(approval_id, approval):
             raise HTTPException(404, "no pending approval with that id")
         return {"ok": True}
 
-    @app.post("/approvals/{approval_id}/reject")
+    @app.post("/approvals/{approval_id}/reject", dependencies=guarded)
     def reject(approval_id: str) -> dict:
         if not broker.reject(approval_id):
             raise HTTPException(404, "no pending approval with that id")
         return {"ok": True}
 
-    @app.get("/receipts")
+    @app.get("/receipts", dependencies=guarded)
     def receipts() -> list[dict]:
         return [r.model_dump() for r in gateway.receipts.all()]
 
-    @app.get("/receipts/verify")
+    @app.get("/receipts/verify", dependencies=guarded)
     def verify() -> dict:
         check = verify_chain(gateway.receipts.all())
         return {"ok": check.ok, "head": check.head, "bad_seq": check.bad_seq}
@@ -99,4 +120,4 @@ def build_from_env() -> FastAPI:
         extra_steps={},  # taint (6) lands Oct 31; two-channel (8) / Prompt Guard (9) are features
         features=settings.features,
     )
-    return create_app(gateway, broker)
+    return create_app(gateway, broker, operator_token=settings.operator_token)

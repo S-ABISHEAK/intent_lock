@@ -8,6 +8,7 @@ then tool-level labels feed the Rule-of-Two flags and `intentlock` denies (no ta
 """
 
 import logging
+import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -21,7 +22,7 @@ from nacl.signing import VerifyKey
 from intentlock.approvals.requests import binding_for, new_request
 from intentlock.approvals.verify import NonceStore
 from intentlock.connector.shop_connector import ConnectorError, ShopConnector
-from intentlock.models import ActionProposal, Approval, ApprovalRequest, Mandate
+from intentlock.models import ActionProposal, Approval, ApprovalRequest, Decision, Mandate
 from intentlock.policy.pipeline import StepFn, decide
 from intentlock.policy.rule_of_two import SessionFlags
 from intentlock.policy.tools import TOOL_ARGS, sanitize_args
@@ -43,6 +44,12 @@ FORWARD_TOOLS = frozenset(
     }
 )
 Waiter = Callable[[ApprovalRequest], Approval | None]
+
+
+class QuoteMoved(Exception):
+    """The quote changed between the decision and showing the approval card."""
+
+
 ShopTools = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
@@ -91,6 +98,14 @@ class Gateway:
         self.clock = clock
         self.shop_tools = shop_tools or (connector.call_shop_tool if connector else None)
         self.session: Session | None = None
+        self.summaries: dict[str, dict[str, Any]] = {}  # approval_id -> what the card shows
+        self._in_flight = 0
+        self._lock = threading.Lock()
+
+    @property
+    def busy(self) -> bool:
+        with self._lock:
+            return self._in_flight > 0
 
     def now(self) -> int:
         return int(self.clock())
@@ -141,6 +156,8 @@ class Gateway:
             args=args,
             ts=self.now(),
         )
+        with self._lock:
+            self._in_flight += 1
         try:
             return self._commit(session, proposal)
         except Exception as exc:  # fail closed: anything unexpected is a DENY plus an error receipt
@@ -150,6 +167,31 @@ class Gateway:
             except Exception:
                 log.exception("could not write the error receipt")
             return {"status": "denied", "reasons": ["PIPELINE_ERROR"]}
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+
+    def _summary(self, proposal: ActionProposal, decision: Decision, kept: dict) -> dict[str, Any]:
+        """What the approval card shows (SPEC §10). For checkout it is the authoritative quote,
+        re-fetched and required to match the decided hash."""
+        summary: dict[str, Any] = {
+            "tool": proposal.tool,
+            "args": receipt_safe(kept),
+            "reasons": [r.code for r in decision.reasons],
+        }
+        if proposal.tool == "checkout":
+            q = self.connector.get_quote(str(kept["cart_id"]), str(kept["shipping_address_id"]))
+            if q.quote_hash != decision.quote_hash:
+                raise QuoteMoved
+            summary.update(
+                lines=[line.model_dump(mode="json") for line in q.lines],
+                fees_paise=q.fees_paise,
+                tax_paise=q.tax_paise,
+                total_paise=q.total_paise,
+                recurring=[r.model_dump(mode="json") for r in q.recurring],
+                shipping_address_id=q.shipping_address_id,
+            )
+        return summary
 
     def _commit(self, session: Session, proposal: ActionProposal) -> dict[str, Any]:
         known = proposal.tool in TOOL_ARGS
@@ -187,19 +229,51 @@ class Gateway:
 
         approval, expected = None, None
         if decision.outcome == "REVIEW":
+            try:
+                summary = self._summary(proposal, decision, kept)
+            except QuoteMoved:
+                return self._refuse_execution(
+                    proposal, "QUOTE_CHANGED", "before the user was asked"
+                )
+            except ConnectorError as exc:
+                return self._refuse_execution(proposal, "QUOTE_UNAVAILABLE", str(exc))
             req = new_request(
                 session.mandate, session.session_id, proposal, decision, now=self.now()
             )
-            self.receipts.append("approval", {"event": "requested", "request": req.model_dump()})
-            approval = self.waiter(req)
+            self.summaries[req.approval_id] = summary
+            self.receipts.append(
+                "approval", {"event": "requested", "request": req.model_dump(), "summary": summary}
+            )
+            try:
+                approval = self.waiter(req)
+            finally:
+                self.summaries.pop(req.approval_id, None)
             if approval is None:
                 self.receipts.append(
                     "approval", {"event": "not_approved", "approval_id": req.approval_id}
                 )
                 return {"status": "not_approved", "reasons": codes}
             self.receipts.append("approval", {"event": "signed", "approval": approval.model_dump()})
+            if (approval.approval_id, approval.nonce, approval.expires_at) != (
+                req.approval_id,
+                req.nonce,
+                req.expires_at,
+            ):
+                return self._refuse_execution(
+                    proposal, "APPROVAL_MISMATCH", "not the issued request"
+                )
             expected = binding_for(session.mandate, session.session_id, proposal, decision)
 
+        # Re-check what may have changed while waiting (review LOW: decision-time TOCTOU).
+        if self.session is not session:
+            return self._refuse_execution(proposal, "MANDATE_UNCONFIRMED", "session replaced")
+        if session.mandate is not None and self.config != "none":
+            if not session.mandate.user_confirmed:
+                return self._refuse_execution(proposal, "MANDATE_UNCONFIRMED")
+            if self.now() >= session.mandate.expires_at:
+                return self._refuse_execution(proposal, "MANDATE_EXPIRED")
+
+        self.receipts.append("execution", {"action_id": proposal.action_id, "event": "started"})
         result = self.connector.execute(
             proposal,
             decision,
@@ -207,21 +281,42 @@ class Gateway:
             expected=expected,
             verify_key=self.verify_key,
             nonces=self.nonces,
-            now=self.now(),
+            clock=self.clock,
         )
         exec_codes = [r.code for r in result.reasons]
+        response: dict[str, Any] = (
+            {"status": "executed", "reasons": [], "result": result.result}
+            if result.executed
+            else {"status": "denied", "reasons": exec_codes}
+        )
+        try:
+            self.receipts.append(
+                "execution",
+                {
+                    "action_id": proposal.action_id,
+                    "event": "finished",
+                    "executed": result.executed,
+                    "reasons": exec_codes,
+                    "result": receipt_safe(result.result),
+                },
+            )
+        except Exception:  # the merchant call already happened: report the truth, flag the gap
+            log.exception("execution receipt failed after the merchant call")
+            response["receipt_error"] = True
+        return response
+
+    def _refuse_execution(self, proposal: ActionProposal, code: str, detail: str = "") -> dict:
         self.receipts.append(
             "execution",
             {
                 "action_id": proposal.action_id,
-                "executed": result.executed,
-                "reasons": exec_codes,
-                "result": receipt_safe(result.result),
+                "event": "refused",
+                "executed": False,
+                "reasons": [code],
+                "detail": detail,
             },
         )
-        if not result.executed:
-            return {"status": "denied", "reasons": exec_codes}
-        return {"status": "executed", "reasons": [], "result": result.result}
+        return {"status": "denied", "reasons": [code]}
 
 
 def build_gateway_mcp(gateway: Gateway) -> FastMCP:

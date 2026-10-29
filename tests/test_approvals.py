@@ -213,7 +213,7 @@ def test_nonce_is_single_use_across_separate_handles(tmp_path):
 
 
 def test_concurrent_double_consume_exactly_one_succeeds(tmp_path):
-    results, barrier = [], threading.Barrier(20)
+    results, barrier = [], threading.Barrier(20, timeout=10)
 
     def worker():
         store = NonceStore(Database(tmp_path / "run.sqlite"))

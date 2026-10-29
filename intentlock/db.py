@@ -6,6 +6,7 @@ racing, which is what the receipt chain and the single-use nonce insert rely on 
 """
 
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -30,15 +31,26 @@ class Database:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = self.connect()
-        try:
-            conn.executescript(SCHEMA)
-        finally:
-            conn.close()
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        # Switching a brand-new file to WAL can report "locked" immediately when several handles
+        # create it at once (the busy handler doesn't cover that step), so retry briefly.
+        for attempt in range(50):
+            conn = self.connect()
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.executescript(SCHEMA)
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == 49:
+                    raise
+            finally:
+                conn.close()
+            time.sleep(0.01 * (attempt + 1))
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
         return conn
 

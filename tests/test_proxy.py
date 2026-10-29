@@ -157,7 +157,7 @@ def test_allow_executes_without_a_prompt(make_gw, store):
     call(gw, "add_to_cart", sku="MS-1001", qty=1)
     out = call(gw, "checkout", **CHECKOUT)
     assert out["status"] == "executed" and prompts == [] and len(store.orders) == 1
-    assert kinds(gw)[-3:] == ["proposal", "decision", "execution"]
+    assert kinds(gw)[-4:] == ["proposal", "decision", "execution", "execution"]
 
 
 def test_review_is_approved_signed_executed_and_fully_receipted(make_gw, store):
@@ -166,7 +166,16 @@ def test_review_is_approved_signed_executed_and_fully_receipted(make_gw, store):
     out = call(gw, "checkout", **CHECKOUT)
     assert out["status"] == "executed" and out["reasons"] == []
     assert store.orders[0]["total_paise"] == 5_499_900
-    assert kinds(gw)[-5:] == ["proposal", "decision", "approval", "approval", "execution"]
+    assert kinds(gw)[-6:] == [
+        "proposal",
+        "decision",
+        "approval",
+        "approval",
+        "execution",
+        "execution",
+    ]
+    events = [r.payload["event"] for r in gw.receipts.all() if r.kind == "execution"]
+    assert events == ["started", "finished"]
     events = [r.payload["event"] for r in gw.receipts.all() if r.kind == "approval"]
     assert events == ["requested", "signed"]
     assert verify_chain(gw.receipts.all()).ok
@@ -329,3 +338,65 @@ def test_gateway_mcp_mirrors_the_shop_agent_tools_and_schemas(make_gw, store):
     for name in AGENT_TOOLS:
         assert gw_tools[name]["properties"] == shop_tools[name]["properties"], name
         assert gw_tools[name].get("required") == shop_tools[name].get("required"), name
+
+
+# -- Oct 30 review fixes -------------------------------------------------------------------
+def test_mandate_that_expires_while_waiting_for_approval_does_not_execute(make_gw, store):
+    t = {"now": NOW}
+
+    def slow_user(req):
+        t["now"] = NOW + 90  # the user takes 90 s; the mandate ends at NOW + 60
+        return approve_all(req)
+
+    gw = make_gw(
+        waiter=slow_user, mandate=make_mandate(expires_at=NOW + 60), clock=lambda: t["now"]
+    )
+    call(gw, "add_to_cart", sku="LAP-1201", qty=1)
+    out = call(gw, "checkout", **CHECKOUT)
+    assert out == {"status": "denied", "reasons": ["MANDATE_EXPIRED"]} and store.orders == []
+
+
+def test_session_replaced_while_waiting_for_approval_does_not_execute(make_gw, store):
+    holder = {}
+
+    def replacing_user(req):
+        holder["gw"].start_session(make_mandate(auto_approve_under_paise=10**9))
+        return approve_all(req)
+
+    gw = make_gw(waiter=replacing_user)
+    holder["gw"] = gw
+    call(gw, "add_to_cart", sku="LAP-1201", qty=1)
+    out = call(gw, "checkout", **CHECKOUT)
+    assert out["status"] == "denied" and out["reasons"] == ["MANDATE_UNCONFIRMED"]
+    assert store.orders == []
+
+
+@pytest.mark.parametrize("field", ["approval_id", "nonce", "expires_at"])
+def test_a_substituted_approval_is_rejected_even_with_the_same_binding(make_gw, store, field):
+    def substitute(req):
+        changed = {"approval_id": "other", "nonce": "cd" * 16, "expires_at": req.expires_at - 1}
+        return sign_request(req.model_copy(update={field: changed[field]}), APPROVER)
+
+    gw = make_gw(waiter=substitute)
+    call(gw, "add_to_cart", sku="LAP-1201", qty=1)
+    out = call(gw, "checkout", **CHECKOUT)
+    assert out == {"status": "denied", "reasons": ["APPROVAL_MISMATCH"]} and store.orders == []
+
+
+def test_receipt_failure_after_a_real_execution_still_reports_executed(make_gw, store):
+    gw = make_gw()
+    real_append = gw.receipts.append
+
+    def flaky(kind, payload):
+        if kind == "execution" and payload.get("event") == "finished":
+            raise OSError("disk full")
+        return real_append(kind, payload)
+
+    gw.receipts.append = flaky
+    call(gw, "add_to_cart", sku="MS-1001", qty=1)
+    out = call(gw, "checkout", **CHECKOUT)
+    assert out["status"] == "executed" and out.get("receipt_error") is True
+    assert len(store.orders) == 1
+    assert [r.payload.get("event") for r in gw.receipts.all() if r.kind == "execution"] == [
+        "started"
+    ]

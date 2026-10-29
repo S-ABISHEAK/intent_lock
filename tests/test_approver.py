@@ -31,9 +31,14 @@ def request_body(expires_at=NOW + 120):
     }
 
 
+UI = "ui-token-test"
+
+
 @pytest.fixture
 def client():
-    return TestClient(create_app(KEY, clock=lambda: NOW))
+    return TestClient(
+        create_app(KEY, clock=lambda: NOW, ui_token=UI), headers={"X-Approver-Token": UI}
+    )
 
 
 def test_signs_a_valid_request_and_the_signature_verifies(client):
@@ -59,7 +64,9 @@ def test_refuses_malformed_requests(client):
 
 
 def test_without_a_key_it_refuses_to_sign():
-    c = TestClient(create_app(None, clock=lambda: NOW))
+    c = TestClient(
+        create_app(None, clock=lambda: NOW, ui_token=UI), headers={"X-Approver-Token": UI}
+    )
     assert c.post("/sign", json=request_body()).status_code == 503
 
 
@@ -85,3 +92,22 @@ def test_loading_a_missing_or_corrupt_key_fails(tmp_path):
     bad.write_text("zz")
     with pytest.raises(ValueError):
         load_verify_key(bad)
+
+
+def test_signing_needs_the_ui_token_the_gateway_never_holds():
+    c = TestClient(create_app(KEY, clock=lambda: NOW, ui_token=UI))
+    assert c.post("/sign", json=request_body()).status_code == 401
+    assert (
+        c.post("/sign", json=request_body(), headers={"X-Approver-Token": "wrong"}).status_code
+        == 401
+    )
+
+
+def test_an_unset_ui_token_refuses_every_signature():
+    c = TestClient(create_app(KEY, clock=lambda: NOW, ui_token=""))
+    assert c.post("/sign", json=request_body(), headers={"X-Approver-Token": ""}).status_code == 401
+
+
+def test_auth_is_checked_before_the_body():
+    c = TestClient(create_app(KEY, clock=lambda: NOW, ui_token=UI))
+    assert c.post("/sign", json={}).status_code == 401
