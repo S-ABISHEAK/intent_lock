@@ -197,3 +197,74 @@ def test_schemas_with_float_fields_work_with_and_without_the_cache(tmp_path):
     assert client.structured(MSG, Scored).score == 0.75
     assert client.structured(MSG, Scored).score == 0.75  # served from cache
     assert len(fake.calls) == 2
+
+
+# -- tool-calling chat for the agent (SPEC §15) ---------------------------------------------------
+def tool_reply(calls, content=None):
+    tool_calls = [
+        SimpleNamespace(id=f"call{i}", function=SimpleNamespace(name=n, arguments=a))
+        for i, (n, a) in enumerate(calls)
+    ]
+    msg = SimpleNamespace(content=content, tool_calls=tool_calls or None)
+    return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+
+class FakeChat(FakeOpenAI):
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+TOOLS = [{"type": "function", "function": {"name": "search_products", "parameters": {}}}]
+
+
+def make_chat(tmp_path, script):
+    fake = FakeChat(script)
+    settings = Settings(model_api_key=SECRET, llm_cache_dir=str(tmp_path / "cache"))
+    return LLMClient(settings, client=fake, sleep=lambda s: None), fake
+
+
+def test_chat_normalizes_tool_calls_and_passes_tools(tmp_path):
+    client, fake = make_chat(tmp_path, [tool_reply([("search_products", '{"query": "laptop"}')])])
+    out = client.chat(MSG, TOOLS)
+    assert out == {
+        "content": None,
+        "tool_calls": [
+            {"id": "call0", "name": "search_products", "arguments": '{"query": "laptop"}'}
+        ],
+    }
+    assert fake.calls[0]["tools"] == TOOLS and fake.calls[0]["model"] == "muse-spark-1.3"
+
+
+def test_chat_final_answer_has_no_tool_calls(tmp_path):
+    client, _ = make_chat(tmp_path, [tool_reply([], content="done")])
+    assert client.chat(MSG, TOOLS) == {"content": "done", "tool_calls": []}
+
+
+def test_chat_is_cached_and_retried(tmp_path):
+    err = llm_module.openai.APIConnectionError(request=REQ)
+    client, fake = make_chat(tmp_path, [err, tool_reply([], content="ok")])
+    assert client.chat(MSG, TOOLS)["content"] == "ok"
+    assert client.chat(MSG, TOOLS)["content"] == "ok"
+    assert len(fake.calls) == 2  # one failure + one success; the repeat came from the cache
+
+
+def test_chat_gives_up_after_retries(tmp_path):
+    err = llm_module.openai.APIConnectionError(request=REQ)
+    client, _ = make_chat(tmp_path, [err, err, err])
+    with pytest.raises(LLMError):
+        client.chat(MSG, TOOLS)
+
+
+def test_weak_model_client_needs_its_own_configuration(tmp_path):
+    with pytest.raises(LLMError):
+        LLMClient.weak(Settings())
+    s = Settings(
+        weak_model_base_url="https://weak.example/v1", weak_model_api_key="k", weak_model_id="w-1"
+    )
+    weak = LLMClient.weak(s)
+    assert str(weak._client.base_url).startswith("https://weak.example/v1")
+    assert weak.default_model == "w-1"

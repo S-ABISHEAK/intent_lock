@@ -38,15 +38,33 @@ class LLMClient:
         *,
         client: Any = None,
         sleep: Callable[[float], None] = time.sleep,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        default_model: str | None = None,
     ) -> None:
         self.settings = settings
+        self.default_model = default_model or settings.model_id
         self._client = client or openai.OpenAI(
-            base_url=settings.model_base_url, api_key=settings.model_api_key or "unset"
+            base_url=base_url or settings.model_base_url,
+            api_key=(api_key if api_key is not None else settings.model_api_key) or "unset",
         )
         self._sleep = sleep
         self.mode = "json_schema"  # becomes "json_only" if the endpoint rejects response_format
         self.cache_hits = 0
         self.cache_misses = 0
+
+    @classmethod
+    def weak(cls, settings: Settings, **kwargs: Any) -> "LLMClient":
+        """The weak open-weights baseline agent (SPEC §4) on its own OpenAI-compatible endpoint."""
+        if not (settings.weak_model_base_url and settings.weak_model_id):
+            raise LLMError("weak model not configured (WEAK_MODEL_BASE_URL / WEAK_MODEL_ID)")
+        return cls(
+            settings,
+            base_url=settings.weak_model_base_url,
+            api_key=settings.weak_model_api_key,
+            default_model=settings.weak_model_id,
+            **kwargs,
+        )
 
     # -- cache -------------------------------------------------------------------------------
     def _cache_path(self, model: str, messages: list[dict], schema: dict) -> Path:
@@ -60,12 +78,15 @@ class LLMClient:
         return Path(self.settings.llm_cache_dir) / f"{key}.json"
 
     @staticmethod
-    def _write_cache(path: Path, content: str) -> None:
+    def _write_json(path: Path, data: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"content": content}, f)
+            json.dump(data, f)
         os.replace(tmp, path)
+
+    def _write_cache(self, path: Path, content: str) -> None:
+        self._write_json(path, {"content": content})
 
     def _read_cache(self, path: Path, schema_cls: type[T]) -> T | None:
         """Return a validated cached reply, or None if absent, unreadable or stale."""
@@ -133,7 +154,7 @@ class LLMClient:
         model: str | None = None,
         use_cache: bool = True,
     ) -> T:
-        model = model or self.settings.model_id
+        model = model or self.default_model
         path = self._cache_path(model, messages, schema_cls.model_json_schema())
         if use_cache:
             cached = self._read_cache(path, schema_cls)
@@ -169,3 +190,51 @@ class LLMClient:
             if attempt < MAX_RETRIES:
                 self._sleep(0.5 * (attempt + 1))
         raise LLMError(f"LLM call failed after {MAX_RETRIES + 1} attempts: {last_error}")
+
+    # -- tool-calling chat for the agent loop (SPEC §15) -----------------------------------------
+    def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        *,
+        model: str | None = None,
+        use_cache: bool = True,
+    ) -> dict[str, Any]:
+        """One assistant turn: {"content": str | None, "tool_calls": [{id, name, arguments}]}."""
+        model = model or self.default_model
+        path = self._cache_path(model, messages, {"chat_tools": tools})
+        if use_cache:
+            try:
+                cached = json.loads(path.read_text(encoding="utf-8"))["reply"]
+                self.cache_hits += 1
+                return cached
+            except (OSError, KeyError, ValueError):
+                self.cache_misses += 1
+        last_error = "unknown error"
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                resp = self._client.chat.completions.create(
+                    model=model, messages=messages, tools=tools
+                )
+                msg = resp.choices[0].message
+                reply = {
+                    "content": msg.content,
+                    "tool_calls": [
+                        {"id": c.id, "name": c.function.name, "arguments": c.function.arguments}
+                        for c in (msg.tool_calls or [])
+                    ],
+                }
+            except openai.OpenAIError as exc:
+                last_error = f"API error: {type(exc).__name__}"
+                if isinstance(exc, openai.AuthenticationError | openai.PermissionDeniedError):
+                    break
+            except (AttributeError, IndexError, TypeError) as exc:
+                last_error = f"malformed response: {type(exc).__name__}"
+            else:
+                if use_cache:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    self._write_json(path, {"reply": reply})
+                return reply
+            if attempt < MAX_RETRIES:
+                self._sleep(0.5 * (attempt + 1))
+        raise LLMError(f"LLM chat failed after {MAX_RETRIES + 1} attempts: {last_error}")

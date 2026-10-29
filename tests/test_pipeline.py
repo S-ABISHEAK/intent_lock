@@ -7,8 +7,9 @@ from hypothesis import strategies as st
 import intentlock.policy.pipeline as pipeline
 from intentlock.connector.shop_connector import ConnectorError
 from intentlock.models import ActionProposal, Reason
-from intentlock.policy.pipeline import STEP_SETS, decide, sanitize_args
+from intentlock.policy.pipeline import decide, sanitize_args, steps_for
 from intentlock.policy.reasons import RANK, REGISTRY, make_reason, outcome_of, worst
+from intentlock.policy.rule_of_two import SessionFlags
 from tests.factories import NOW, make_line, make_mandate, make_proposal, make_quote, monthly
 
 CONFIGS = ["none", "r2_session", "intentlock"]
@@ -43,11 +44,13 @@ class FakeConnector:
 DEFAULT = object()  # lets a test pass mandate=None ("no mandate") explicitly
 
 
-NOOP_STEPS = {n: (lambda ctx: []) for n in (6, 7, 8, 9)}  # real steps arrive Oct 31
+NOOP_STEPS = {n: (lambda ctx: []) for n in (6, 8, 9)}  # real steps arrive Oct 31-Nov 2
 
 
 def run(proposal=None, mandate=DEFAULT, config="intentlock", connector=None, **kw):
     extra = {**NOOP_STEPS, **(kw.pop("extra_steps", None) or {})}
+    kw.setdefault("flags", SessionFlags())
+    kw.setdefault("features", frozenset({8, 9}))
     return decide(
         proposal or make_proposal(),
         make_mandate() if mandate is DEFAULT else mandate,
@@ -236,9 +239,10 @@ def test_recipient_hard_rule_beats_approval():
 
 # -- config step sets (D-005, D-011) --------------------------------------------------------------
 def test_step_sets_match_decisions():
-    assert STEP_SETS["none"] == (1, 3)
-    assert STEP_SETS["r2_session"] == (1, 2, 3, 4, 5, 7, 8, 9)
-    assert STEP_SETS["intentlock"] == (1, 2, 3, 4, 5, 6, 8, 9)
+    full = frozenset({8, 9})
+    assert steps_for("none", full) == (1, 3)
+    assert steps_for("r2_session", full) == (1, 2, 3, 4, 5, 7, 8, 9)
+    assert steps_for("intentlock", full) == (1, 2, 3, 4, 5, 6, 8, 9)
 
 
 def test_missing_model_assisted_step_fails_closed_by_default():
@@ -250,14 +254,14 @@ def test_missing_model_assisted_step_fails_closed_by_default():
 
 def test_steps_outside_the_configs_set_are_not_called():
     called = []
-    steps = {n: (lambda c, n=n: called.append(n) or []) for n in (6, 7, 8, 9)}
+    steps = {n: (lambda c, n=n: called.append(n) or []) for n in (6, 8, 9)}
     q = make_quote([make_line(unit_paise=100)])
     m = make_mandate(auto_approve_under_paise=10**6)
     run(mandate=m, connector=FakeConnector(q), extra_steps=steps, config="intentlock")
     assert called == [6, 8, 9]
     called.clear()
     run(mandate=m, connector=FakeConnector(q), extra_steps=steps, config="r2_session")
-    assert called == [7, 8, 9]
+    assert called == [8, 9]  # step 7 is built in (D-021)
     called.clear()
     run(mandate=m, connector=FakeConnector(q), extra_steps=steps, config="none")
     assert called == []
@@ -323,7 +327,7 @@ def test_worst_orders_deny_review_allow():
 @pytest.mark.parametrize("tool", list(COMMIT_PROPOSALS))
 @pytest.mark.parametrize("config", CONFIGS)
 @pytest.mark.parametrize(
-    "victim", ["schema", "scope", "connector", "hard_rules", "approval", "extra"]
+    "victim", ["schema", "scope", "connector", "hard_rules", "approval", "rule_of_two", "extra"]
 )
 def test_any_exception_in_any_step_is_deny_with_an_error_report(tool, config, victim, monkeypatch):
     if victim == "scope" and config == "none":
@@ -349,8 +353,12 @@ def test_any_exception_in_any_step_is_deny_with_an_error_report(tool, config, vi
         monkeypatch.setattr(pipeline, "hard_rules", explode)
     elif victim == "approval":
         monkeypatch.setattr(pipeline, "step_approval", explode)
+    elif victim == "rule_of_two":
+        if config != "r2_session":
+            pytest.skip("step 7 runs only in r2_session")
+        monkeypatch.setitem(pipeline.BUILTIN_STEPS, 7, explode)
     else:
-        extra = {n: explode for n in (6, 7, 8, 9)}
+        extra = {n: explode for n in (6, 8, 9)}
 
     m = make_mandate(allowed_actions=[tool], allowed_recipients=["a@example.com"])
     reported = []
@@ -445,7 +453,11 @@ def test_property_extra_args_of_any_kind_never_change_the_decision(extras):
     extras = {k: v for k, v in extras.items() if k not in base_args}
     q = make_quote([make_line(unit_paise=5_000_000)])
     plain = run(make_proposal(**base_args), connector=FakeConnector(q))
-    noisy = run(make_proposal(**base_args, **extras), connector=FakeConnector(q))
+    # built directly: an extra arg may be named like a make_proposal parameter (e.g. "tool")
+    noisy_proposal = ActionProposal(
+        action_id="a1", session_id="s1", tool="checkout", args={**base_args, **extras}, ts=NOW
+    )
+    noisy = run(noisy_proposal, connector=FakeConnector(q))
     assert plain == noisy
     assert outcome_of(noisy.reasons[0]) in {"REVIEW", "DENY", "ALLOW"}
 

@@ -116,6 +116,19 @@ class Decision(_Model):
     config: Literal["none", "r2_session", "intentlock"]
 
 
+class ApprovalRequest(_Model):
+    """The unsigned fields of an Approval (SPEC §10): what the gateway asks the user to approve."""
+
+    approval_id: str
+    nonce: str
+    mandate_id: str
+    policy_version: StrictInt
+    session_id: str
+    action_tool: str
+    quote_hash: str  # the quote hash, or the action hash for non-checkout tools (D-022)
+    expires_at: EpochSeconds
+
+
 class Approval(_Model):
     approval_id: str
     nonce: str

@@ -53,7 +53,7 @@ def reseal(q: dict) -> dict:
     return q
 
 
-# -- happy path ---------------------------------------------------------------------------------
+# -- happy path ----------
 
 
 def test_get_quote_returns_validated_authoritative_quote(shop):
@@ -80,7 +80,7 @@ def test_get_quote_accepts_identifiers_only_never_money():
     assert params == ["self", "cart_id", "shipping_address_id"]
 
 
-# -- fail closed --------------------------------------------------------------------------------
+# -- fail closed ----------
 
 
 def test_missing_key_fails_before_any_request(monkeypatch):
@@ -137,7 +137,7 @@ def test_float_money_in_response_is_rejected(store):
         connector(mock(lambda r: httpx.Response(200, json=q))).get_quote("c1", "ADDR-0001")
 
 
-# -- the quote must be internally honest --------------------------------------------------------
+# -- the quote must be internally honest ----------
 
 
 def test_tampered_hash_is_rejected(store):
@@ -167,7 +167,7 @@ def test_quote_for_a_different_cart_or_address_is_rejected(store):
         connector(mock(lambda r: httpx.Response(200, json=other_addr))).get_quote("c1", "ADDR-0001")
 
 
-# -- credentials never leak ---------------------------------------------------------------------
+# -- credentials never leak ----------
 
 
 def test_key_never_appears_in_errors_or_repr_even_if_shop_echoes_it(store):
@@ -181,7 +181,7 @@ def test_key_never_appears_in_errors_or_repr_even_if_shop_echoes_it(store):
     assert KEY not in repr(c) and KEY not in str(c.__dict__.get("base_url", ""))
 
 
-# -- resolve_target -----------------------------------------------------------------------------
+# -- resolve_target ----------
 
 
 def test_resolve_target_ok_and_not_found(shop):
@@ -208,3 +208,19 @@ def test_quote_with_no_lines_or_zero_quantity_is_rejected(store):
     zero = reseal({**q, "total_paise": 0})
     with pytest.raises(ConnectorError, match="no items"):
         connector(mock(lambda r: httpx.Response(200, json=zero))).get_quote("c1", "ADDR-0001")
+
+
+def test_reset_shop_needs_the_key_and_empties_the_cart(store, shop):
+    connector(shop).reset_shop()
+    assert store.state()["cart"] == []
+    with pytest.raises(ConnectorError, match="401"):
+        connector(shop, key="wrong").reset_shop()
+
+
+def test_demo_mandate_file_is_a_valid_confirmed_mandate():
+    from intentlock.cli import DEMO_MANDATE
+    from intentlock.models import Mandate
+
+    m = Mandate.model_validate_json(DEMO_MANDATE.read_text())
+    assert m.user_confirmed and m.budget_total_paise == 6_000_000
+    assert all(g.span in m.user_text for g in m.grants)

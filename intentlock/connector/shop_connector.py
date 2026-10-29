@@ -7,21 +7,59 @@ from the shop's quote; callers pass identifiers, never prices (invariant 3). Exe
 approval checks, nonce consume, place_order) arrives with the approvals on Oct 30 (SPEC §6.2).
 """
 
+import json
 import os
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote as urlquote
 
 import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+from nacl.signing import VerifyKey
 from pydantic import ValidationError
 
+from intentlock.approvals.requests import Binding
+from intentlock.approvals.verify import NonceStore, verify_approval
 from intentlock.canonical import compute_quote_hash
-from intentlock.models import Quote
+from intentlock.models import ActionProposal, Approval, Decision, Quote, Reason
+from intentlock.policy.reasons import make_reason
+from intentlock.policy.tools import sanitize_args
 
 TARGET_KINDS = ("address", "order")
+# Read and cart tools the proxy may forward to the shop MCP server. Commit tools never are (D-012).
+FORWARDABLE_TOOLS = frozenset(
+    {
+        "search_products",
+        "get_product",
+        "get_reviews",
+        "get_saved_addresses",
+        "get_order_history",
+        "read_inbox",
+        "read_email",
+        "add_to_cart",
+        "remove_from_cart",
+    }
+)
 
 
 class ConnectorError(Exception):
     """The authoritative shop state could not be obtained or did not check out."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+@dataclass(frozen=True)
+class ExecutionResult:
+    executed: bool
+    reasons: list[Reason] = field(default_factory=list)
+    result: dict[str, Any] | None = None
+
+
+def _refused(code: str, detail: str = "") -> ExecutionResult:
+    return ExecutionResult(executed=False, reasons=[make_reason(code, detail)])
 
 
 class ShopConnector:
@@ -50,7 +88,7 @@ class ShopConnector:
         except httpx.HTTPError as exc:
             raise ConnectorError(f"shop unreachable: {type(exc).__name__}") from None
         if resp.status_code != 200:
-            raise ConnectorError(f"shop returned {resp.status_code}")
+            raise ConnectorError(f"shop returned {resp.status_code}", status=resp.status_code)
         try:
             data = resp.json()
         except ValueError:
@@ -80,8 +118,116 @@ class ShopConnector:
             raise ConnectorError("quote is for a different address")
         return quote
 
+    def reset_shop(self) -> None:
+        """Demo/eval only: return the shop to its initial state."""
+        self._request("POST", "/reset")
+
     def resolve_target(self, kind: str, target_id: str) -> dict[str, Any]:
         """Confirm a destructive tool's target exists (SPEC §6 step 3)."""
         if kind not in TARGET_KINDS:
             raise ConnectorError(f"unknown target kind {kind!r}")
         return self._request("GET", f"/resolve/{kind}/{urlquote(target_id, safe='')}")
+
+    # -- execution (SPEC §6.2) -----------------------------------------------------------------
+    def execute(
+        self,
+        proposal: ActionProposal,
+        decision: Decision,
+        *,
+        approval: Approval | None,
+        expected: Binding | None,
+        verify_key: VerifyKey,
+        nonces: NonceStore,
+        now: int,
+    ) -> ExecutionResult:
+        """Re-fetch, verify, consume, call. Never runs a DENY; a REVIEW needs a signed approval."""
+        if decision.outcome == "DENY":
+            raise ValueError("a DENY decision is never executed")
+        tool = proposal.tool
+        args = sanitize_args(tool, proposal.args)
+        needs_approval = decision.outcome == "REVIEW"
+        if needs_approval and approval is None:
+            return _refused("APPROVAL_MISSING")
+        if needs_approval and expected is None:
+            raise ValueError("an approval can only be checked against the gateway's own binding")
+
+        # 1. re-fetch the authoritative state and require it to be what was decided
+        quote = None
+        try:
+            if tool == "checkout":
+                quote = self.get_quote(str(args["cart_id"]), str(args["shipping_address_id"]))
+                if quote.quote_hash != decision.quote_hash:
+                    return _refused(
+                        "QUOTE_CHANGED", "re-fetched quote differs from the decided one"
+                    )
+            elif tool == "delete_saved_address":
+                self.resolve_target("address", str(args["id"]))
+            elif tool == "cancel_order":
+                self.resolve_target("order", str(args["id"]))
+        except ConnectorError as exc:
+            return _refused("QUOTE_UNAVAILABLE", str(exc))
+
+        if needs_approval:
+            # 2. signature, expiry and binding
+            problems = verify_approval(approval, verify_key=verify_key, expected=expected, now=now)
+            if problems:
+                return ExecutionResult(executed=False, reasons=problems)
+            # 3. single use: atomic UNIQUE insert
+            if not nonces.consume(approval.nonce, now=now):
+                return _refused("APPROVAL_REPLAYED")
+
+        # 4. call the merchant with the connector-held key
+        try:
+            return ExecutionResult(executed=True, result=self._commit_call(tool, args, quote))
+        except ConnectorError as exc:
+            if exc.status == 409:
+                return _refused("QUOTE_CHANGED", "shop refused a stale quote")
+            return _refused("EXECUTION_FAILED", str(exc))
+
+    def _commit_call(self, tool: str, args: dict[str, Any], quote: Quote | None) -> dict[str, Any]:
+        if tool == "checkout" and quote is not None:
+            return self._request("POST", "/orders", {"quote_id": quote.quote_id})
+        if tool == "share_cart":
+            return self._request(
+                "POST", "/share_cart", {"cart_id": args["cart_id"], "to": args["to"]}
+            )
+        if tool == "send_email":
+            body = {"to": args["to"], "subject": args["subject"], "body": args["body"]}
+            return self._request("POST", "/send_email", body)
+        if tool == "delete_saved_address":
+            return self._request("DELETE", f"/addresses/{urlquote(str(args['id']), safe='')}")
+        if tool == "cancel_order":
+            return self._request("POST", f"/orders/{urlquote(str(args['id']), safe='')}/cancel")
+        raise ConnectorError(f"no merchant call for tool {tool!r}")
+
+    # -- read/cart forwarding over the shop's MCP endpoint (key stays here, D-012) ----------------
+    async def call_shop_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if name not in FORWARDABLE_TOOLS:
+            raise ConnectorError(f"tool {name!r} is not forwarded to the shop")
+        if not self._api_key:
+            raise ConnectorError("shop credentials not configured")
+        clean = {k: v for k, v in args.items() if v is not None}
+        try:
+            async with (
+                httpx.AsyncClient(headers={"X-API-Key": self._api_key}, timeout=10) as http,
+                streamable_http_client(f"{self.base_url}/mcp", http_client=http) as (
+                    read,
+                    write,
+                    _,
+                ),
+                ClientSession(read, write) as session,
+            ):
+                await session.initialize()
+                result = await session.call_tool(name, clean)
+        except Exception as exc:  # transport or protocol failure: fail closed, no key in message
+            raise ConnectorError(f"shop MCP unavailable: {type(exc).__name__}") from None
+        text = result.content[0].text if result.content else ""
+        if result.isError:
+            raise ConnectorError(text[:300] or "shop tool error")
+        try:
+            data = json.loads(text)
+        except ValueError:
+            raise ConnectorError("shop tool returned invalid JSON") from None
+        if not isinstance(data, dict):
+            raise ConnectorError("shop tool returned an unexpected payload")
+        return data

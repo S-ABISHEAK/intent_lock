@@ -8,6 +8,7 @@ sanitized: only the tool's identifier args remain, so agent-supplied money canno
 from dataclasses import dataclass
 
 from intentlock.models import ActionProposal, Mandate, Quote
+from intentlock.policy.rule_of_two import SessionFlags
 
 
 @dataclass(frozen=True)
@@ -19,3 +20,5 @@ class DecisionContext:
     quote: Quote | None = None
     # SKUs the agent explicitly added with add_to_cart; supplied by the proxy (D-014)
     requested_skus: frozenset[str] = frozenset()
+    # Rule-of-Two A/B flags from the proxy's session (SPEC §8); required by step 7
+    flags: SessionFlags | None = None

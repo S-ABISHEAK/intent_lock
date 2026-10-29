@@ -16,33 +16,34 @@ from intentlock.models import ActionProposal, Decision, Mandate, Reason
 from intentlock.policy.context import DecisionContext
 from intentlock.policy.hard_rules import hard_rules
 from intentlock.policy.reasons import make_reason, outcome_of, worst
+from intentlock.policy.rule_of_two import SessionFlags, step_rule_of_two
+from intentlock.policy.tools import FREE_TEXT_ARGS, TOOL_ARGS, sanitize_args
 
 log = logging.getLogger(__name__)
 
 StepFn = Callable[[DecisionContext], list[Reason]]
 ErrorSink = Callable[[ActionProposal, Exception], None]
 
-# Identifier args per commit tool. Anything else the agent sends (price, total...) is dropped.
-TOOL_ARGS: dict[str, tuple[str, ...]] = {
-    "checkout": ("cart_id", "shipping_address_id"),
-    "send_email": ("to", "subject", "body"),
-    "share_cart": ("cart_id", "to"),
-    "delete_saved_address": ("id",),
-    "cancel_order": ("id",),
-}
-FREE_TEXT_ARGS = ("subject", "body")  # may be empty; all other args must be non-blank
-COMMIT_TOOLS = tuple(TOOL_ARGS)
-
-STEP_SETS: dict[str, tuple[int, ...]] = {
+STEP_SETS: dict[str, tuple[int, ...]] = {  # D-005, D-011, D-021
     "none": (1, 3),
-    "r2_session": (1, 2, 3, 4, 5, 7, 8, 9),
-    "intentlock": (1, 2, 3, 4, 5, 6, 8, 9),
+    "r2_session": (1, 2, 3, 4, 5, 7),
+    "intentlock": (1, 2, 3, 4, 5, 6),
 }
+FEATURE_STEPS = frozenset(
+    {8, 9}
+)  # two-channel, Prompt Guard: on for both guarded configs or neither
 MODEL_ASSISTED_STEPS = (6, 7, 8, 9)
+BUILTIN_STEPS: dict[int, StepFn] = {7: step_rule_of_two}
 
 
-def sanitize_args(tool: str, args: Mapping[str, object]) -> dict[str, object]:
-    return {k: args[k] for k in TOOL_ARGS[tool] if k in args}
+def steps_for(config: str, features: frozenset[int]) -> tuple[int, ...]:
+    if config not in STEP_SETS:
+        raise ValueError(f"unknown config {config!r}")
+    if not set(features) <= FEATURE_STEPS:
+        raise ValueError(f"only steps {sorted(FEATURE_STEPS)} are optional features")
+    if config == "none":
+        return STEP_SETS[config]
+    return STEP_SETS[config] + tuple(sorted(features))
 
 
 def step_schema(proposal: ActionProposal) -> list[Reason]:
@@ -121,13 +122,14 @@ def _isolated(ctx: DecisionContext) -> DecisionContext:
         now=ctx.now,
         quote=ctx.quote.model_copy(deep=True) if ctx.quote else None,
         requested_skus=ctx.requested_skus,
+        flags=ctx.flags,
     )
 
 
-def _run_steps(proposal, mandate, config, connector, now, requested_skus, extra):
-    if config not in STEP_SETS:
-        raise ValueError(f"unknown config {config!r}")
-    steps = STEP_SETS[config]
+def _run_steps(proposal, mandate, config, connector, now, requested_skus, extra, flags, features):
+    steps = steps_for(config, features)
+    if set(extra) & set(BUILTIN_STEPS):
+        raise ValueError("built-in steps cannot be replaced")
 
     reasons = step_schema(proposal)
     if reasons:
@@ -138,6 +140,7 @@ def _run_steps(proposal, mandate, config, connector, now, requested_skus, extra)
         config=config,
         now=now,
         requested_skus=frozenset(requested_skus),
+        flags=flags,
     )
     if 2 in steps and (reasons := step_scope(ctx)):
         return _decision(proposal, config, reasons, None)
@@ -151,7 +154,7 @@ def _run_steps(proposal, mandate, config, connector, now, requested_skus, extra)
     for n in MODEL_ASSISTED_STEPS:
         if n not in steps:
             continue
-        step = extra.get(n)
+        step = BUILTIN_STEPS.get(n) or extra.get(n)
         if step is None:
             raise RuntimeError(
                 f"pipeline step {n} is required by config {config} but not installed"
@@ -173,6 +176,8 @@ def decide(
     requested_skus=frozenset(),
     extra_steps: Mapping[int, StepFn] | None = None,
     error_sink: ErrorSink | None = None,
+    flags: SessionFlags | None = None,
+    features: frozenset[int] = frozenset(),
 ) -> Decision:
     try:
         return _run_steps(
@@ -183,6 +188,8 @@ def decide(
             now,
             requested_skus,
             extra_steps or {},
+            flags,
+            frozenset(features),
         )
     except Exception as exc:  # fail closed (CLAUDE.md invariant 2): never let an error become ALLOW
         if error_sink is not None:

@@ -43,6 +43,8 @@ REGISTRY: dict[str, tuple[Outcome, Source]] = {
     "APPROVAL_EXPIRED": ("DENY", "rule"),
     "APPROVAL_MISMATCH": ("DENY", "rule"),
     "APPROVAL_REPLAYED": ("DENY", "rule"),
+    "APPROVAL_MISSING": ("DENY", "rule"),
+    "EXECUTION_FAILED": ("DENY", "rule"),
     "ALLOWED_IN_MANDATE": ("ALLOW", "rule"),
 }
 

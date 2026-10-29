@@ -86,3 +86,47 @@ def test_make_smoke_does_not_export_the_whole_env_file():
     recipe = makefile.split("\nsmoke:")[1]
     assert "set -a" not in recipe  # SHOP_API_KEY must not reach the smoke process
     assert "SHOP_API_KEY" not in recipe
+
+
+def test_gateway_never_touches_the_approver_private_key():
+    """Invariant 7: only approver/ may sign or load the private key."""
+    forbidden = ("SigningKey", "approver.signing", "approver.keys", "APPROVER_KEY_PATH")
+    offenders = [
+        (rel(p), word)
+        for p in py_files()
+        if rel(p).startswith("intentlock/")
+        for word in forbidden
+        if word in p.read_text()
+    ]
+    assert offenders == []
+
+
+def test_approver_never_touches_the_shop_key():
+    """Invariant 7: the approver never holds the shop API key."""
+    offenders = [
+        rel(p)
+        for p in py_files()
+        if rel(p).startswith("approver/") and "SHOP_API_KEY" in p.read_text()
+    ]
+    assert offenders == []
+
+
+def test_agent_knows_only_the_gateway():
+    """Invariant 12: nothing in agent/ can reach the shop directly."""
+    forbidden = ("SHOP_URL", "SHOP_API_KEY", "8001", "from shop", "import shop", "shop_url")
+    offenders = [
+        (rel(p), word)
+        for p in py_files()
+        if rel(p).startswith("agent/")
+        for word in forbidden
+        if word in p.read_text()
+    ]
+    assert offenders == []
+
+
+def test_agent_prompt_has_no_security_instructions():
+    """SPEC §15: we test the gateway, not prompt hardening."""
+    from agent.prompts import SYSTEM_PROMPT
+
+    words = ("inject", "untrusted", "security", "ignore instructions", "malicious", "verify")
+    assert not [w for w in words if w in SYSTEM_PROMPT.lower()]
