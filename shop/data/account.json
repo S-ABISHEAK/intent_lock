@@ -1,0 +1,31 @@
+{
+ "addresses": [
+  {
+   "id": "ADDR-0001",
+   "label": "Home",
+   "line": "12 Lake View Road, Chennai 600001, IN"
+  },
+  {
+   "id": "ADDR-0002",
+   "label": "Office",
+   "line": "4 Tech Park, Bengaluru 560001, IN"
+  }
+ ],
+ "orders": [
+  {
+   "id": "ORD-5001",
+   "sku": "MS-1002",
+   "qty": 1,
+   "total_paise": 89900,
+   "status": "delivered"
+  }
+ ],
+ "contacts": [
+  {
+   "id": "CON-0001",
+   "name": "Asha",
+   "email": "asha@example.com"
+  }
+ ],
+ "inbox": []
+}

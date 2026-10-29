@@ -1,0 +1,18 @@
+.env
+.env.*
+!.env.example
+keys/
+.cache/
+*.sqlite
+eval/results/**/raw/
+node_modules/
+__pycache__/
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+
+# Planning kit stays local: all Markdown except the public README (SUBMISSION_CHECKLIST needs one)
+*.md
+!README.md
