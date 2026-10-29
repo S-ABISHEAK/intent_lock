@@ -6,6 +6,7 @@
   python -m intentlock.cli verify                      check the receipt hash chain
   python -m intentlock.cli session [mandate.json]      start a gateway session (default: demo)
   python -m intentlock.cli reset                       empty the shop, start a fresh demo session
+  python -m intentlock.cli timeline                    the session's receipts, one line each
 
 `approve` shows what is being approved (items, total, recipient), and only a "y" sends the
 request to the approver with the UI token, then hands the signature to the gateway. `--yes`
@@ -57,6 +58,28 @@ def describe(card: dict[str, Any]) -> str:
         lines.append(f"  {json.dumps(s['args'], ensure_ascii=False)}")
     lines.append(f"  why you are asked: {', '.join(s.get('reasons', [])) or 'unknown'}")
     return "\n".join(lines)
+
+
+def format_receipt(r: dict[str, Any]) -> str:
+    p, kind = r["payload"], r["kind"]
+    if kind == "mandate":
+        what = f"session {p['session_id'][:8]} config={p['config']}"
+    elif kind == "tool_result":
+        what = f"{p['tool']}" + (f"  ERROR {p['error']}" if "error" in p else "")
+    elif kind == "proposal":
+        flags = p.get("flags", {})
+        dropped = f"  dropped={p['dropped_args']}" if p.get("dropped_args") else ""
+        args = json.dumps(p["args"], ensure_ascii=False)
+        what = f"{p['tool']} {args}  A={flags.get('A')} B={flags.get('B')}{dropped}"
+    elif kind == "decision":
+        what = f"{p['outcome']} {[x['code'] for x in p['reasons']]}"
+    elif kind == "approval":
+        what = p["event"]
+    elif kind == "execution":
+        what = p["event"] + (f" executed={p['executed']} {p['reasons']}" if "executed" in p else "")
+    else:
+        what = json.dumps(p, ensure_ascii=False)[:120]
+    return f"{r['seq']:>4}  {kind:<11} {what}"
 
 
 def ask(card: dict[str, Any]) -> bool:
@@ -164,6 +187,7 @@ def _run(s: Settings, argv: list[str] | None) -> int:
     se = sub.add_parser("session")
     se.add_argument("mandate", nargs="?", default=str(DEMO_MANDATE))
     sub.add_parser("reset")
+    sub.add_parser("timeline")
     args = parser.parse_args(argv)
     op = {"X-Operator-Token": s.operator_token}
 
@@ -191,6 +215,14 @@ def _run(s: Settings, argv: list[str] | None) -> int:
         if args.cmd == "reset":
             ShopConnector(s.shop_url).reset_shop()
             print(start_session(s.gateway_url, s.operator_token, DEMO_MANDATE, c))
+            return 0
+        if args.cmd == "timeline":
+            receipts = c.get(f"{s.gateway_url}/receipts", headers=op)
+            receipts.raise_for_status()
+            for r in receipts.json():
+                print(format_receipt(r))
+            check = c.get(f"{s.gateway_url}/receipts/verify", headers=op).json()
+            print(f"chain ok={check['ok']} head={check['head'][:16]}")
             return 0
         if args.cmd == "pending":
             for card in c.get(f"{s.gateway_url}/approvals/pending", headers=op).json():

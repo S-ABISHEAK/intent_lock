@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: setup keys doctor dev session approve agent test lint eval-g eval-e report demo-reset smoke
+.PHONY: setup keys doctor dev session approve agent timeline test lint eval-g eval-e report demo-reset smoke
 
 setup:
 	uv venv --python 3.11 .venv
@@ -48,6 +48,10 @@ session:
 # The user's side of an approval: shows each card and asks y/N.
 approve:
 	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli approve --follow
+
+# The receipts of the current gateway run, one line each, plus the chain check.
+timeline:
+	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli timeline
 
 # The agent gets the gateway URL and model settings only, never shop or operator secrets.
 TASK ?= Buy a wireless mouse under ₹2,000

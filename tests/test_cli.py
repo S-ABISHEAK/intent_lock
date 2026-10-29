@@ -33,3 +33,38 @@ def test_401_explanations_point_at_the_right_token():
         req = httpx.Request("POST", url)
         exc = httpx.HTTPStatusError("401", request=req, response=httpx.Response(401, request=req))
         assert name in cli.explain(exc, s)
+
+
+def test_timeline_lines_are_readable():
+    rows = [
+        {
+            "seq": 0,
+            "kind": "mandate",
+            "payload": {"session_id": "abcdef123", "config": "r2_session"},
+        },
+        {"seq": 1, "kind": "tool_result", "payload": {"tool": "get_reviews"}},
+        {
+            "seq": 2,
+            "kind": "proposal",
+            "payload": {
+                "tool": "checkout",
+                "args": {"cart_id": "c1"},
+                "dropped_args": ["total"],
+                "flags": {"A": True, "B": True},
+            },
+        },
+        {
+            "seq": 3,
+            "kind": "decision",
+            "payload": {"outcome": "REVIEW", "reasons": [{"code": "RULE_OF_TWO"}]},
+        },
+        {"seq": 4, "kind": "approval", "payload": {"event": "signed"}},
+        {
+            "seq": 5,
+            "kind": "execution",
+            "payload": {"event": "finished", "executed": True, "reasons": []},
+        },
+    ]
+    out = "\n".join(cli.format_receipt(r) for r in rows)
+    assert "config=r2_session" in out and "dropped=['total']" in out
+    assert "REVIEW ['RULE_OF_TWO']" in out and "signed" in out and "executed=True" in out
