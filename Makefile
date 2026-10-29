@@ -28,6 +28,9 @@ report:
 demo-reset:
 	@echo "not implemented yet: see SPEC §18"; exit 1
 
-# One muse-spark structured-output call. Exports .env into this shell only; the file is never printed.
+# One muse-spark structured-output call. Sources .env in this shell only and passes just the MODEL_*
+# variables on, so SHOP_API_KEY never reaches the process. The file is never printed.
 smoke:
-	@set -a; [ -f .env ] && . ./.env; set +a; $(PY) -m intentlock.llm.smoke
+	@[ -f .env ] && . ./.env; \
+	MODEL_API_KEY="$$MODEL_API_KEY" MODEL_BASE_URL="$$MODEL_BASE_URL" MODEL_ID="$$MODEL_ID" \
+	MODEL_ID_EVAL="$$MODEL_ID_EVAL" LLM_CACHE_DIR="$$LLM_CACHE_DIR" $(PY) -m intentlock.llm.smoke

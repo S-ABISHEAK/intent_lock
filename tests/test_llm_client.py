@@ -182,3 +182,18 @@ def test_settings_from_env_validates_config_and_hides_key():
     with pytest.raises(ValueError):
         Settings.from_env({"CONFIG": "bogus"})
     assert Settings.from_env({}).config == "intentlock"
+
+
+def test_schemas_with_float_fields_work_with_and_without_the_cache(tmp_path):
+    from pydantic import Field
+
+    class Scored(BaseModel):
+        label: str
+        score: float = Field(ge=0.5, le=1.0)  # a float bound ends up in the JSON schema
+
+    good = json.dumps({"label": "x", "score": 0.75})
+    client, fake = make(tmp_path, [good, good])
+    assert client.structured(MSG, Scored, use_cache=False).score == 0.75
+    assert client.structured(MSG, Scored).score == 0.75
+    assert client.structured(MSG, Scored).score == 0.75  # served from cache
+    assert len(fake.calls) == 2

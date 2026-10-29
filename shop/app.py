@@ -19,7 +19,9 @@ from shop.store import ShopError, Store
 
 
 def _authorized(api_key: str, supplied: str | None) -> bool:
-    return bool(api_key) and supplied is not None and hmac.compare_digest(api_key, supplied)
+    if not api_key or supplied is None:
+        return False
+    return hmac.compare_digest(api_key.encode(), supplied.encode("utf-8", "surrogatepass"))
 
 
 class _McpAuth:
@@ -29,14 +31,19 @@ class _McpAuth:
         self.app, self.api_key = app, api_key
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http":
-            headers = {k.decode().lower(): v.decode() for k, v in scope["headers"]}
-            if not _authorized(self.api_key, headers.get("x-api-key")):
-                await JSONResponse({"detail": "unauthorized"}, status_code=401)(
-                    scope, receive, send
-                )
-                return
-        await self.app(scope, receive, send)
+        if scope["type"] == "lifespan":
+            await self.app(scope, receive, send)
+        elif scope["type"] == "http":
+            headers = {
+                k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]
+            }
+            if _authorized(self.api_key, headers.get("x-api-key")):
+                await self.app(scope, receive, send)
+            else:
+                body = JSONResponse({"detail": "unauthorized"}, status_code=401)
+                await body(scope, receive, send)
+        else:  # websocket or anything else: refuse (fail closed)
+            await send({"type": "websocket.close", "code": 1008})
 
 
 class QuoteReq(BaseModel):
@@ -68,7 +75,9 @@ def create_app(store: Store, api_key: str) -> FastAPI:
         async with mcp.session_manager.run():
             yield
 
-    app = FastAPI(title="ShopLite", lifespan=lifespan)
+    app = FastAPI(
+        title="ShopLite", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
+    )
     app.state.store = store
 
     @app.exception_handler(ShopError)

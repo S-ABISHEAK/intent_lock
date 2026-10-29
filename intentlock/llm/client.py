@@ -19,7 +19,6 @@ from typing import Any, TypeVar
 import openai
 from pydantic import BaseModel, ValidationError
 
-from intentlock.canonical import canonical
 from intentlock.config import Settings
 
 T = TypeVar("T", bound=BaseModel)
@@ -51,9 +50,13 @@ class LLMClient:
 
     # -- cache -------------------------------------------------------------------------------
     def _cache_path(self, model: str, messages: list[dict], schema: dict) -> Path:
-        key = hashlib.sha256(
-            canonical({"model": model, "messages": messages, "schema": schema}).encode()
-        ).hexdigest()
+        blob = json.dumps(
+            {"model": model, "messages": messages, "schema": schema},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        key = hashlib.sha256(blob.encode()).hexdigest()
         return Path(self.settings.llm_cache_dir) / f"{key}.json"
 
     @staticmethod

@@ -70,3 +70,19 @@ def test_env_example_has_no_secret_values():
         key, _, value = line.partition("=")
         if key.endswith(("_KEY", "_TOKEN")):
             assert value == "", f"{key} must be empty in .env.example"
+
+
+def test_no_source_file_can_skip_required_pipeline_steps():
+    offenders = [
+        rel(p)
+        for p in py_files()
+        if not rel(p).startswith("tests/") and "allow_missing_steps" in p.read_text()
+    ]
+    assert offenders == []
+
+
+def test_make_smoke_does_not_export_the_whole_env_file():
+    makefile = (ROOT / "Makefile").read_text()
+    recipe = makefile.split("\nsmoke:")[1]
+    assert "set -a" not in recipe  # SHOP_API_KEY must not reach the smoke process
+    assert "SHOP_API_KEY" not in recipe

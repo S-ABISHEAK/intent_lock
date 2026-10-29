@@ -3,8 +3,9 @@
 Steps are pure `(DecisionContext) -> list[Reason]`. Precedence is DENY > REVIEW > ALLOW. Only
 deterministic steps (1-5) can lead to ALLOW; steps 6-9 are passed in as `extra_steps` and can only
 add REVIEW/DENY reasons. Any exception anywhere becomes DENY `PIPELINE_ERROR` plus a report to
-`error_sink` (the `error` receipt from Oct 30). A step missing from `extra_steps` also fails closed
-unless `allow_missing_steps` is set, so a config can never silently run without a safety check.
+`error_sink` (the `error` receipt from Oct 30). A step missing from `extra_steps` also fails closed,
+so a config can never silently run without a safety check. Model-assisted steps receive deep copies
+of their inputs and cannot mutate the mandate, proposal or quote that later steps read.
 """
 
 import logging
@@ -112,7 +113,18 @@ def _decision(proposal, config, reasons, quote) -> Decision:
     )
 
 
-def _run_steps(proposal, mandate, config, connector, now, requested_skus, extra, allow_missing):
+def _isolated(ctx: DecisionContext) -> DecisionContext:
+    return DecisionContext(
+        proposal=ctx.proposal.model_copy(deep=True),
+        mandate=ctx.mandate.model_copy(deep=True) if ctx.mandate else None,
+        config=ctx.config,
+        now=ctx.now,
+        quote=ctx.quote.model_copy(deep=True) if ctx.quote else None,
+        requested_skus=ctx.requested_skus,
+    )
+
+
+def _run_steps(proposal, mandate, config, connector, now, requested_skus, extra):
     if config not in STEP_SETS:
         raise ValueError(f"unknown config {config!r}")
     steps = STEP_SETS[config]
@@ -141,12 +153,10 @@ def _run_steps(proposal, mandate, config, connector, now, requested_skus, extra,
             continue
         step = extra.get(n)
         if step is None:
-            if allow_missing:
-                continue
             raise RuntimeError(
                 f"pipeline step {n} is required by config {config} but not installed"
             )
-        produced = step(ctx)
+        produced = step(_isolated(ctx))
         if any(outcome_of(r) == "ALLOW" for r in produced):
             raise ValueError(f"step {n} tried to ALLOW; model-assisted steps can only escalate")
         reasons = [*reasons, *produced]
@@ -163,7 +173,6 @@ def decide(
     requested_skus=frozenset(),
     extra_steps: Mapping[int, StepFn] | None = None,
     error_sink: ErrorSink | None = None,
-    allow_missing_steps: bool = False,
 ) -> Decision:
     try:
         return _run_steps(
@@ -174,7 +183,6 @@ def decide(
             now,
             requested_skus,
             extra_steps or {},
-            allow_missing_steps,
         )
     except Exception as exc:  # fail closed (CLAUDE.md invariant 2): never let an error become ALLOW
         if error_sink is not None:

@@ -43,14 +43,18 @@ class FakeConnector:
 DEFAULT = object()  # lets a test pass mandate=None ("no mandate") explicitly
 
 
+NOOP_STEPS = {n: (lambda ctx: []) for n in (6, 7, 8, 9)}  # real steps arrive Oct 31
+
+
 def run(proposal=None, mandate=DEFAULT, config="intentlock", connector=None, **kw):
-    kw.setdefault("allow_missing_steps", True)  # steps 6-9 arrive Oct 31
+    extra = {**NOOP_STEPS, **(kw.pop("extra_steps", None) or {})}
     return decide(
         proposal or make_proposal(),
         make_mandate() if mandate is DEFAULT else mandate,
         config,
         connector=connector or FakeConnector(),
         now=NOW,
+        extra_steps=extra,
         **kw,
     )
 
@@ -444,3 +448,35 @@ def test_property_extra_args_of_any_kind_never_change_the_decision(extras):
     noisy = run(make_proposal(**base_args, **extras), connector=FakeConnector(q))
     assert plain == noisy
     assert outcome_of(noisy.reasons[0]) in {"REVIEW", "DENY", "ALLOW"}
+
+
+# -- review fixes (Oct 29 security review) ----------
+def test_there_is_no_public_switch_to_skip_required_steps():
+    import inspect
+
+    assert "allow_missing_steps" not in inspect.signature(decide).parameters
+
+
+def test_model_assisted_steps_get_isolated_copies_and_cannot_widen_the_mandate():
+    m = make_mandate(allowed_recipients=["a@example.com"])
+    q = make_quote([make_line(unit_paise=100)])
+    seen = {}
+
+    def mutate(ctx):
+        ctx.mandate.auto_approve_under_paise = 10**12
+        ctx.mandate.allowed_recipients.append("evil@x.co")
+        ctx.mandate.allowed_actions.append("delete_saved_address")
+        ctx.quote.lines.clear()
+        return []
+
+    def observe(ctx):
+        seen["auto"] = ctx.mandate.auto_approve_under_paise
+        seen["recipients"] = list(ctx.mandate.allowed_recipients)
+        seen["lines"] = len(ctx.quote.lines)
+        return []
+
+    d = run(mandate=m, connector=FakeConnector(q), extra_steps={6: mutate, 8: observe})
+    assert d.outcome == "REVIEW"  # still needs approval: auto_approve was never widened
+    assert seen == {"auto": 0, "recipients": ["a@example.com"], "lines": 1}
+    assert m.auto_approve_under_paise == 0 and m.allowed_recipients == ["a@example.com"]
+    assert "delete_saved_address" not in m.allowed_actions

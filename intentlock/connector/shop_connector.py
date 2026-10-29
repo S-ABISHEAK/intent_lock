@@ -67,6 +67,8 @@ class ShopConnector:
             quote = Quote.model_validate(data)
         except ValidationError:
             raise ConnectorError("shop returned an invalid quote") from None
+        if not any(line.qty > 0 for line in quote.lines):
+            raise ConnectorError("quote has no items")
         if compute_quote_hash(quote) != quote.quote_hash:
             raise ConnectorError("quote hash mismatch")
         parts = sum(line.unit_paise * line.qty for line in quote.lines)

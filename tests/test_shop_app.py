@@ -130,3 +130,38 @@ def test_mcp_commit_tools_are_inert(store, tool):
     with pytest.raises(Exception, match="IntentLock gateway"):
         run(build_mcp(store).call_tool(tool, args))
     assert store.state() == before and len(store.get_saved_addresses()) == 2
+
+
+def test_non_http_scopes_never_reach_the_mcp_app():
+    from shop.app import _McpAuth
+
+    reached = []
+
+    async def inner(scope, receive, send):
+        reached.append(scope["type"])
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    guard = _McpAuth(inner, KEY)
+    run(guard({"type": "websocket", "headers": []}, receive, send))
+    assert reached == [] and sent  # refused and answered, not passed through
+    run(guard({"type": "lifespan", "headers": []}, receive, send))
+    assert reached == ["lifespan"]  # lifespan events must still work
+
+
+def test_non_ascii_api_key_is_a_clean_401_not_a_crash(client):
+    r = client.get("/state", headers={"X-API-Key": "caf\u00e9".encode("latin-1")})
+    assert r.status_code == 401
+    r = client.post("/mcp", headers={"X-API-Key": "caf\u00e9".encode("latin-1")}, json={})
+    assert r.status_code == 401
+
+
+def test_api_docs_are_not_exposed(client):
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code in (401, 404), path

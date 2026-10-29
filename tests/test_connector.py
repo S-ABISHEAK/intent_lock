@@ -197,3 +197,14 @@ def test_resolve_target_rejects_unknown_kind_without_calling_shop():
     with pytest.raises(ConnectorError):
         c.resolve_target("../state", "x")
     assert calls == []
+
+
+def test_quote_with_no_lines_or_zero_quantity_is_rejected(store):
+    empty = reseal(quote_json(store, lines=[], total_paise=0))
+    with pytest.raises(ConnectorError, match="no items"):
+        connector(mock(lambda r: httpx.Response(200, json=empty))).get_quote("c1", "ADDR-0001")
+    q = quote_json(store)
+    q["lines"][0]["qty"] = 0
+    zero = reseal({**q, "total_paise": 0})
+    with pytest.raises(ConnectorError, match="no items"):
+        connector(mock(lambda r: httpx.Response(200, json=zero))).get_quote("c1", "ADDR-0001")
