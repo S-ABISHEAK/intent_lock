@@ -8,6 +8,7 @@
   python -m intentlock.cli reset [--attacks P1,P6]     empty the shop (optionally with SPEC §14.3
                                                        attack fixtures), start a fresh demo session
   python -m intentlock.cli timeline                    the session's receipts, one line each
+  python -m intentlock.cli mandate "<request>"         Muse drafts a mandate; read it back, y/N
 
 `approve` shows what is being approved (items, total, recipient), and only a "y" sends the
 request to the approver with the UI token, then hands the signature to the gateway. `--yes`
@@ -103,6 +104,19 @@ def format_receipt(r: dict[str, Any]) -> str:
     else:
         what = json.dumps(p, ensure_ascii=False)[:120]
     return safe_text(f"{r['seq']:>4}  {kind:<11} {what}")
+
+
+MARKS = {"grant": "+", "limit": "-", "not_granted": "!", "question": "?"}
+
+
+def format_readback(lines: list[dict[str, Any]]) -> str:
+    out = []
+    for b in lines:
+        quote = (
+            f'  "{b["span"]}"' if b.get("span") and b["kind"] in ("grant", "not_granted") else ""
+        )
+        out.append(safe_text(f"{MARKS.get(b['kind'], '*')} {b['text']}{quote}"))
+    return "\n".join(out)
 
 
 def ask(card: dict[str, Any]) -> bool:
@@ -217,6 +231,8 @@ def _run(s: Settings, argv: list[str] | None) -> int:
     rs = sub.add_parser("reset")
     rs.add_argument("--attacks", default="", help="comma-separated fixtures, e.g. P1,P2,P5,P6")
     sub.add_parser("timeline")
+    md = sub.add_parser("mandate")
+    md.add_argument("text", help="your request in your own words")
     args = parser.parse_args(argv)
     op = {"X-Operator-Token": s.operator_token}
 
@@ -245,6 +261,26 @@ def _run(s: Settings, argv: list[str] | None) -> int:
             attacks = [a.strip() for a in args.attacks.split(",") if a.strip()]
             ShopConnector(s.shop_url).reset_shop(attacks=attacks)
             print(start_session(s.gateway_url, s.operator_token, DEMO_MANDATE, c))
+            return 0
+        if args.cmd == "mandate":
+            r = c.post(
+                f"{s.gateway_url}/mandate/compile", json={"user_text": args.text}, headers=op
+            )
+            r.raise_for_status()
+            body = r.json()
+            print(format_readback(body["readback"]))
+            if body["clarifications"]:
+                print(
+                    "\nAnswer the questions above by rewriting your request, then run this again."
+                )
+                return 1
+            if input("\nConfirm this mandate? [y/N] ").strip().lower() != "y":
+                print("not confirmed")
+                return 1
+            mandate = {**body["mandate"], "user_confirmed": True}
+            r = c.post(f"{s.gateway_url}/session", json={"mandate": mandate}, headers=op)
+            r.raise_for_status()
+            print(f"session {r.json()['session_id']} started with your confirmed mandate")
             return 0
         if args.cmd == "timeline":
             receipts = c.get(f"{s.gateway_url}/receipts", headers=op)

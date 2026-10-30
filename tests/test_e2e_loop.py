@@ -32,7 +32,7 @@ from intentlock.proxy.mcp_proxy import Gateway
 from intentlock.receipts import ReceiptLog
 from shop.app import create_app as create_shop
 from shop.store import Store
-from tests.factories import make_mandate
+from tests.factories import grounded_mandate
 from tests.servers import serve
 
 SHOP_KEY = "e2e-shop-key-must-never-leak-7f3a"
@@ -40,7 +40,7 @@ OP = "e2e-operator-token"
 UI_TOKEN = "e2e-ui-token"
 OPH = {"X-Operator-Token": OP}
 APPROVER = SigningKey.generate()
-MANDATE = make_mandate(expires_at=4_102_444_800, auto_approve_under_paise=200_000)
+MANDATE = grounded_mandate()
 
 
 def turn(*calls, content=None):
@@ -117,10 +117,10 @@ class UI(threading.Thread):
     def run(self):
         with httpx.Client(timeout=10) as c:
             while not self.stop.is_set():
-                if (
-                    self.before
-                    and c.get(f"{self.gateway_url}/approvals/pending", headers=OPH).json()
-                ):
+                if self.before:  # act once a card exists, and before anyone approves it
+                    if not c.get(f"{self.gateway_url}/approvals/pending", headers=OPH).json():
+                        time.sleep(0.05)
+                        continue
                     self.before()
                     self.before = None
                 self.approved += approve_pending(

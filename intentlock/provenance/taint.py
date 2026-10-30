@@ -10,7 +10,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from intentlock.models import ProvenanceRecord, Reason, TrustLabel
 from intentlock.policy.hard_rules import split_recipients
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from intentlock.policy.context import DecisionContext
     from intentlock.provenance.ledger import Ledger
 
-_DASHES = dict.fromkeys(map(ord, "‐‑‒–—―−﹘﹣"), "-")
+_DASHES = dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63"), "-")
 
 SKU_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]{2,4}-\d{3,6})(?!\d)")
 ID_RE = re.compile(r"(?<![A-Za-z0-9])((?:SEL|ADDR)-[A-Za-z0-9]+)", re.IGNORECASE)
@@ -62,12 +62,24 @@ def extract_tokens(text: str, _depth: int = 0) -> list[str]:
             found.add(tok)
         tail = re.split(r"[?#]", m.group(0), maxsplit=1)
         if len(tail) == 2 and _depth < 3:  # a URL hidden in another URL's query or fragment
-            found.update(extract_tokens(tail[1], _depth=_depth + 1))
+            found.update(extract_tokens(unquote(tail[1]), _depth=_depth + 1))
     found.update(m.group(0).lower() for m in EMAIL_RE.finditer(text))
     found.update(m.group(1).upper() for m in SKU_RE.finditer(text))
     found.update(m.group(1).upper() for m in ID_RE.finditer(text))
     found.update(m.group(0) for m in ACCOUNT_RE.finditer(text))
     return sorted(t for t in found if len(t) >= MIN_TOKEN_LEN)
+
+
+def url_strings(text: str, _depth: int = 0) -> list[str]:
+    """Every URL in the text, including ones hidden (or percent-encoded) in another URL's query or
+    fragment, so each is checked as its own value."""
+    out = []
+    for m in URL_RE.finditer(text):
+        out.append(m.group(0))
+        tail = re.split(r"[?#]", m.group(0), maxsplit=1)
+        if len(tail) == 2 and _depth < 3:
+            out += url_strings(unquote(tail[1]), _depth + 1)
+    return out
 
 
 def normalize_value(value: str) -> str:
@@ -86,7 +98,13 @@ CANONICAL_FIELDS = ("shipping_address_id", ".sku", ".seller_id", "id")
 # Where untrusted content naming a value is itself the risk, even if a clean record has it too:
 # the attacker picks among the user's own addresses, contacts or orders (D-031). Not SKUs or
 # sellers: reviews naming the product being bought are normal.
-PICKED_FIELDS = ("shipping_address_id", "id", "to", ".email")
+PICKED_EXACT = frozenset({"shipping_address_id", "id", "to"})
+
+
+def picked_field(field: str) -> bool:
+    return field in PICKED_EXACT or field.endswith(".email")
+
+
 CLEAN_LABELS = frozenset({TrustLabel.USER, TrustLabel.TRUSTED_API, TrustLabel.SENSITIVE})
 TAINT_LABELS = frozenset({TrustLabel.UNTRUSTED, TrustLabel.DERIVED_UNTRUSTED})
 
@@ -223,7 +241,7 @@ def sensitive_values(ctx: "DecisionContext") -> list[tuple[str, str]]:
         if tool == "send_email":
             for part in ("subject", "body"):
                 text = clean_text(str(args.get(part, "")))
-                out += [(f"{part}.url", m.group(0)) for m in URL_RE.finditer(text)]
+                out += [(f"{part}.url", u) for u in url_strings(text)]
                 out += [(f"{part}.email", m.group(0)) for m in EMAIL_RE.finditer(text)]
         return out
     if tool in ("delete_saved_address", "cancel_order"):
@@ -250,7 +268,7 @@ def make_taint_step(ledger: "Ledger"):
             seen.add(value)
             verdict = index.classify(value)
             named = index.untrusted_sources(value)
-            if verdict.status == "clean" and named and field.endswith(PICKED_FIELDS):
+            if verdict.status == "clean" and named and picked_field(field):
                 detail = f"{field}={value} is also named by untrusted content {list(named)}"
                 reasons.append(
                     make_reason("TAINTED_ARG", f"{detail} via {index.explain_any(value)}")

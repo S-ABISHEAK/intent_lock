@@ -256,3 +256,81 @@ def test_email_addresses_and_urls_anywhere_in_the_message_are_checked(ledger):
     out = make_taint_step(ledger)(ctx(proposal=p))
     details = " ".join(r.detail for r in out)
     assert "leak@evil.co" in details and "evil.example/x" in details
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "see http://localhost:8001/p/lap-1201?next=https://evil.example/login",
+        "see http://localhost:8001/p/lap-1201?u=https%3A%2F%2Fevil.example%2Flogin",
+        "see http://localhost:8001/p/lap-1201#https://evil.example/login",
+    ],
+)
+def test_a_url_hidden_inside_a_trusted_link_in_an_email_is_checked(ledger, body):
+    ledger.add(user_records(S, "email asha@example.com", ts=1))
+    search(ledger, "LAP-1201")
+    observe(
+        ledger,
+        "get_product",
+        {"sku": "LAP-1201"},
+        {"sku": "LAP-1201", "url": "http://localhost:8001/p/lap-1201"},
+    )
+    p = make_proposal("send_email", to="asha@example.com", subject="s", body=body)
+    out = make_taint_step(ledger)(ctx(proposal=p))
+    assert any("evil.example/login" in r.detail for r in out)
+
+
+def test_a_seller_named_in_a_review_is_not_flagged(ledger):
+    search(ledger, "LAP-1201")
+    addresses(ledger)
+    observe(
+        ledger,
+        "get_reviews",
+        {"sku": "LAP-1201"},
+        {"reviews": [{"id": "r1", "author": "a", "text": "Seller SEL-IN01 was quick"}]},
+    )
+    assert make_taint_step(ledger)(ctx()) == []
+
+
+@settings(max_examples=60, deadline=None)
+@given(
+    st.lists(
+        st.tuples(
+            st.sampled_from(LABELS),
+            st.lists(st.sampled_from(TOKENS), max_size=3),
+            st.one_of(st.none(), st.integers(min_value=0, max_value=1000)),
+        ),
+        max_size=8,
+    ),
+    st.booleans(),
+)
+def test_property_taint_and_promptguard_together_never_lower_an_outcome(
+    tmp_path_factory, records, cheap
+):
+    """§17 test 1 with both real model-assisted steps (6 and 9) installed."""
+    from intentlock.verify.promptguard import make_promptguard_step
+
+    ledger = Ledger(Database(tmp_path_factory.mktemp("pg") / "run.sqlite"))
+    ledger.add([
+        ProvenanceRecord(record_id=f"r{i}", session_id=S, tool="t", label=label, field_path="f",
+                         raw=f"text {i} " + " ".join(toks), tokens=toks, ts=1, call_seq=i + 1,
+                         pg_score_permille=score)
+        for i, (label, toks, score) in enumerate(records)
+    ])  # fmt: skip
+    q = make_quote([make_line(unit_paise=100)])
+    m = make_mandate(auto_approve_under_paise=10**9 if cheap else 0)
+    common = dict(
+        connector=FakeConnector(q), now=NOW, flags=SessionFlags(), features=frozenset({9})
+    )
+    real = decide(
+        make_proposal(),
+        m,
+        "intentlock",
+        extra_steps={6: make_taint_step(ledger), 9: make_promptguard_step(ledger)},
+        **common,
+    )
+    noop = decide(
+        make_proposal(), m, "intentlock", extra_steps={6: lambda c: [], 9: lambda c: []}, **common
+    )
+    assert RANK[real.outcome] >= RANK[noop.outcome]
+    assert real.outcome in ("ALLOW", "REVIEW")  # neither signal can DENY on its own

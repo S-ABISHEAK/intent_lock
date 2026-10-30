@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: setup keys doctor dev session approve agent timeline test lint eval-g eval-e report demo-reset smoke
+.PHONY: setup keys doctor dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset smoke
 
 setup:
 	uv venv --python 3.11 .venv
@@ -44,6 +44,10 @@ CLI_ENV = env -i PATH="$$PATH" HOME="$$HOME" GATEWAY_URL="$$GATEWAY_URL" APPROVE
 
 session:
 	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli session
+
+# Muse drafts a mandate from your words; you read it back and confirm (SPEC §9).
+mandate:
+	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli mandate "$(TEXT)"
 
 # The user's side of an approval: shows each card and asks y/N.
 approve:

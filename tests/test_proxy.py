@@ -553,3 +553,21 @@ def test_a_result_that_arrives_after_the_session_changed_is_withheld(make_gw):
     gw.shop_tools = slow
     out = call(gw, "get_reviews", sku="LAP-1201")
     assert "error" in out and "reviews" not in out
+
+
+def test_start_session_waits_for_in_flight_reads_too(make_gw):
+    from intentlock.proxy.mcp_proxy import GatewayBusy
+
+    gw = make_gw()
+    real, seen = gw.shop_tools, {}
+
+    async def slow(name, args):
+        try:
+            gw.start_session(make_mandate())
+        except GatewayBusy:
+            seen["refused"] = True
+        return await real(name, args)
+
+    gw.shop_tools = slow
+    out = call(gw, "get_reviews", sku="LAP-1201")
+    assert seen == {"refused": True} and "reviews" in out

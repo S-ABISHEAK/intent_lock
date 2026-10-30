@@ -178,3 +178,18 @@ def test_yes_and_follow_cannot_be_combined(monkeypatch):
     monkeypatch.setenv("APPROVER_UI_TOKEN", "u")
     with pytest.raises(SystemExit):
         cli.main(["approve", "--yes", "--follow"])
+
+
+def test_readback_lines_print_with_their_quoted_spans():
+    lines = [
+        {"kind": "grant", "text": "May checkout", "span": "you can buy accessories"},
+        {"kind": "limit", "text": "No subscriptions or recurring charges", "span": None},
+        {
+            "kind": "not_granted",
+            "text": "Not granted: allow_recurring (GRANT_NEGATED)",
+            "span": "no subscriptions",
+        },
+        {"kind": "question", "text": "Which colour?", "span": None},
+    ]
+    out = cli.format_readback(lines)
+    assert '"you can buy accessories"' in out and "Which colour?" in out and "Not granted" in out

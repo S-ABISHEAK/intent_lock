@@ -32,6 +32,7 @@ from intentlock.provenance.labels import annotate
 from intentlock.provenance.ledger import Ledger
 from intentlock.provenance.taint import label_call, make_taint_step, normalize_value, user_records
 from intentlock.receipts import ReceiptLog
+from intentlock.verify.promptguard import Scorer, make_promptguard_step, score_records
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +97,8 @@ class Gateway:
         features: frozenset[int],
         clock: Callable[[], float] = time.time,
         shop_tools: ShopTools | None = None,
+        scorer: Scorer | None = None,
+        promptguard_status: str | None = None,
     ) -> None:
         self.config = config
         self.connector = connector
@@ -107,6 +110,14 @@ class Gateway:
             raise ValueError("the gateway installs the taint step from its own ledger")
         self.ledger = ledger
         self.extra_steps = {6: make_taint_step(ledger), **extra_steps}
+        if 9 in features:  # Prompt Guard (D-021, D-034): built from our own ledger and scorer
+            if scorer is None or 9 in extra_steps:
+                raise ValueError(
+                    "step 9 needs a Prompt Guard scorer and is installed by the gateway"
+                )
+            self.extra_steps[9] = make_promptguard_step(ledger)
+        self.scorer = scorer
+        self.promptguard_status = promptguard_status or ("on" if 9 in features else "off")
         self.features = frozenset(features)
         self.clock = clock
         self.shop_tools = shop_tools or (connector.call_shop_tool if connector else None)
@@ -130,7 +141,11 @@ class Gateway:
             if self._in_flight:
                 raise GatewayBusy("a commit is in progress")
             self.session = Session(session_id=session_id, mandate=mandate)
-        payload = {"session_id": session_id, "config": self.config}
+        payload = {
+            "session_id": session_id,
+            "config": self.config,
+            "promptguard": self.promptguard_status,
+        }
         payload["mandate"] = mandate.model_dump(mode="json") if mandate else None
         if mandate is not None:
             self.ledger.add(user_records(session_id, mandate.user_text, ts=self.now()))
@@ -150,7 +165,13 @@ class Gateway:
         if self.session is None:
             return {"error": "no active IntentLock session"}
         if name in FORWARD_TOOLS:
-            return await self._forward(self.session, name, args)
+            with self._lock:
+                self._in_flight += 1  # start_session waits for reads too (checkpoint review LOW)
+            try:
+                return await self._forward(self.session, name, args)
+            finally:
+                with self._lock:
+                    self._in_flight -= 1
         return await anyio.to_thread.run_sync(self.commit, self.session, name, args)
 
     async def _forward(self, session: Session, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -174,6 +195,8 @@ class Gateway:
                 name, args, result, self.ledger.index(sid), session_id=sid, call_seq=seq,
                 ts=self.now(), error=error,
             )  # fmt: skip
+            if self.scorer is not None:  # scored before delivery, like the labels (SPEC §12)
+                records = score_records(records, self.scorer)
             self.ledger.add(records)
         except Exception as exc:
             log.exception("could not record provenance; withholding the result")

@@ -72,3 +72,32 @@ def make_proposal(tool="checkout", **args) -> ActionProposal:
     if tool == "checkout" and not args:
         args = {"cart_id": "c1", "shipping_address_id": "ADDR-0001"}
     return ActionProposal(action_id="a1", session_id="s1", tool=tool, args=args, ts=NOW)
+
+
+DEMO_TEXT = (
+    "Laptop under ₹60,000 all-in, Indian seller, no subscriptions, must be refundable; "
+    "you can buy accessories under ₹2,000 without asking."
+)
+DEMO_SPAN = "you can buy accessories under ₹2,000 without asking"
+
+
+def grounded_mandate(**overrides) -> Mandate:
+    """The SPEC §18 demo mandate: passes the §9 validator unchanged and is user-confirmed."""
+    data = dict(
+        user_text=DEMO_TEXT,
+        allowed_actions=["search", "read", "add_to_cart", "checkout"],
+        budget_total_paise=6_000_000,
+        auto_approve_under_paise=200_000,
+        allowed_seller_countries=["IN"],
+        allow_recurring=False,
+        require_refundable=True,
+        max_quantity=1,
+        grants=[
+            {"field": "allowed_actions:checkout", "value": "checkout", "span": DEMO_SPAN},
+            {"field": "auto_approve_under_paise", "value": "200000", "span": DEMO_SPAN},
+        ],
+        user_confirmed=True,
+        expires_at=4_102_444_800,
+    )
+    data.update(overrides)
+    return make_mandate(**data)

@@ -1,5 +1,6 @@
 """Gateway REST surface (Oct 30 review MED 1): operator routes need a token the agent never has."""
 
+import json
 import threading
 import time
 
@@ -18,14 +19,14 @@ from intentlock.proxy.mcp_proxy import Gateway
 from intentlock.receipts import ReceiptLog
 from shop.app import create_app as create_shop
 from shop.store import Store
-from tests.factories import make_mandate
+from tests.factories import grounded_mandate, make_mandate
 from tests.test_proxy import FakeShopTools
 
 OP = "operator-token-test"
 H = {"X-Operator-Token": OP}
 SHOP_KEY = "api-test-shop-key"
 APPROVER = SigningKey.generate()
-MANDATE = make_mandate(expires_at=4_102_444_800).model_dump(mode="json")
+MANDATE = grounded_mandate().model_dump(mode="json")
 
 
 @pytest.fixture
@@ -153,3 +154,61 @@ def test_gateway_refuses_to_start_with_the_ui_token_in_its_environment(monkeypat
     monkeypatch.setenv("APPROVER_UI_TOKEN", "should-not-be-here")
     with pytest.raises(RuntimeError, match="APPROVER_UI_TOKEN"):
         build_from_env()
+
+
+# -- Nov 1: only grounded, confirmed mandates start a session (SPEC §9, D-026) --------------------
+def client_for(env, compiler=None):
+    gw, broker, _ = env
+    return TestClient(create_app(gw, broker, operator_token=OP, compiler=compiler))
+
+
+def test_an_ungrounded_mandate_cannot_start_a_session(env):
+    ungrounded = make_mandate(expires_at=4_102_444_800).model_dump(
+        mode="json"
+    )  # checkout, no grant
+    r = client_for(env).post("/session", headers=H, json={"mandate": ungrounded})
+    assert r.status_code == 422 and "allowed_actions:checkout" in r.text
+
+
+def test_an_unconfirmed_mandate_cannot_start_a_session(env):
+    m = grounded_mandate(user_confirmed=False).model_dump(mode="json")
+    assert client_for(env).post("/session", headers=H, json={"mandate": m}).status_code == 422
+
+
+def test_a_mandate_with_open_questions_cannot_start_a_session(env):
+    m = grounded_mandate(clarifications_needed=["Which colour?"]).model_dump(mode="json")
+    assert client_for(env).post("/session", headers=H, json={"mandate": m}).status_code == 422
+
+
+def test_the_demo_mandate_file_starts_a_session(env):
+    from intentlock.cli import DEMO_MANDATE
+
+    m = json.loads(DEMO_MANDATE.read_text())
+    assert client_for(env).post("/session", headers=H, json={"mandate": m}).status_code == 200
+
+
+def test_compile_returns_a_readback_and_an_unconfirmed_mandate(env):
+    from intentlock.mandate.grounding import ground
+
+    report = ground(grounded_mandate(user_confirmed=False))
+    c = client_for(env, compiler=lambda text: report)
+    r = c.post("/mandate/compile", headers=H, json={"user_text": "anything"})
+    body = r.json()
+    assert r.status_code == 200 and body["mandate"]["user_confirmed"] is False
+    assert any(b["kind"] == "grant" and b["span"] for b in body["readback"])
+    assert c.post("/mandate/compile", json={"user_text": "x"}).status_code == 401
+
+
+def test_compile_without_a_model_or_on_failure_gives_no_mandate(env):
+    from intentlock.mandate.compiler import CompileError
+
+    assert (
+        client_for(env).post("/mandate/compile", headers=H, json={"user_text": "x"}).status_code
+        == 503
+    )
+
+    def broken(text):
+        raise CompileError("muse down")
+
+    c = client_for(env, compiler=broken)
+    assert c.post("/mandate/compile", headers=H, json={"user_text": "x"}).status_code == 502
