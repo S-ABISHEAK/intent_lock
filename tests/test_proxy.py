@@ -235,7 +235,9 @@ def test_addon_with_no_clean_source_is_unrequested(make_gw, store):
 
 def test_addon_the_user_asked_for_counts_as_requested(make_gw, store):
     m = make_mandate(
-        user_text="Buy a mouse, gift wrapped (GW-0799) please.", auto_approve_under_paise=10**6
+        user_text="Buy a mouse, gift wrapped (GW-0799) please.",
+        auto_approve_under_paise=10**6,
+        grants=[{"field": "requested_addon", "value": "GW-0799", "span": "gift wrapped (GW-0799)"}],
     )
     gw = make_gw(mandate=m)
     call(gw, "add_to_cart", sku="MS-1001", qty=1)
@@ -536,3 +538,18 @@ def test_unexpected_failure_while_forwarding_is_handled_like_a_shop_error(make_g
     gw.shop_tools = broken
     out = call(gw, "get_reviews", sku="LAP-1201")
     assert "error" in out and "tool_result" in kinds(gw)
+
+
+def test_a_result_that_arrives_after_the_session_changed_is_withheld(make_gw):
+    gw = make_gw()
+    real = gw.shop_tools
+
+    async def slow(name, args):
+        out = await real(name, args)
+        gw.end_session()
+        gw.start_session(make_mandate())  # the operator replaced the session meanwhile
+        return out
+
+    gw.shop_tools = slow
+    out = call(gw, "get_reviews", sku="LAP-1201")
+    assert "error" in out and "reviews" not in out

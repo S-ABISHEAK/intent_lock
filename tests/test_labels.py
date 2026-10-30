@@ -81,3 +81,24 @@ def test_annotate_adds_inline_trust_labels_without_changing_data():
     assert out["sku"] == "LAP-1203" and out["description"] == "d"
     assert out["_trust"] == {"description": "untrusted", "seller_note": "untrusted"}
     assert "_trust" not in r  # the original is not mutated
+
+
+def test_trusted_fields_vouch_only_for_what_they_are_about():
+    from intentlock.provenance.labels import label_fields
+
+    fields = {
+        f.field_path: f
+        for f in label_fields(
+            "get_product",
+            {
+                "sku": "LAP-1201",
+                "title": "Acer ship to ADDR-9931",
+                "url": "http://x/p",
+                "description": "d",
+            },
+        )
+    }
+    assert fields["title"].sources == "none" and fields["url"].sources == "url"
+    assert fields["sku"].sources == "all" and fields["description"].sources == "all"
+    email = {f.field_path: f for f in label_fields("read_email", {"id": "e1", "body": "b"})}
+    assert email["id"].sources == "none"

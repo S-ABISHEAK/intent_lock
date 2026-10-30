@@ -23,6 +23,7 @@ from nacl.signing import VerifyKey
 from intentlock.approvals.requests import binding_for, new_request
 from intentlock.approvals.verify import NonceStore
 from intentlock.connector.shop_connector import ConnectorError, ShopConnector
+from intentlock.mandate.grounding import granted_addons
 from intentlock.models import ActionProposal, Approval, ApprovalRequest, Decision, Mandate
 from intentlock.policy.pipeline import StepFn, decide
 from intentlock.policy.rule_of_two import SessionFlags
@@ -163,6 +164,9 @@ class Gateway:
         except Exception as exc:  # anything unexpected is handled like a shop error, fail closed
             log.exception("forwarding %s failed", name)
             result, error = {"error": f"shop tool failed: {type(exc).__name__}"}, True
+        if self.session is not session:  # replaced while we waited: nothing for a dead session
+            self.receipts.append("tool_result", {**record, "error": "session replaced"})
+            return {"error": "the session changed; result withheld"}
         # Label before delivery (invariant 9): nothing reaches the agent unless it is ledgered.
         try:
             seq = self.ledger.next_call_seq(sid)
@@ -186,11 +190,10 @@ class Gateway:
         return annotate(name, result)
 
     def requested_skus(self, session: Session) -> frozenset[str]:
-        """D-014/D-029: SKUs the agent added that the user named or a clean merchant lookup
-        showed. The agent adding something is never itself a reason to trust it."""
-        index = self.ledger.index(session.session_id)
-        normalized = (normalize_value(sku) for sku in session.added_skus)
-        return frozenset(sku for sku in normalized if index.chosen_by_user_or_merchant(sku))
+        """D-031: add-ons the agent added that the user explicitly asked for through a grounded
+        `requested_addon` grant. Neither the agent adding it nor a mention in text is enough."""
+        added = {normalize_value(sku) for sku in session.added_skus}
+        return frozenset(added & granted_addons(session.mandate))
 
     # -- commit tools ---------------------------------------------------------------------------
     def _error(self, proposal: ActionProposal, exc: BaseException) -> None:

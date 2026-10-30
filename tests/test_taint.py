@@ -281,3 +281,22 @@ def test_tricky_urls_do_not_match_trusted_product_urls(ledger):
     ):
         assert status(ledger, normalize_value(url)) != "clean", url
     assert status(ledger, normalize_value("http://localhost:8001/p/lap-1201")) == "clean"
+
+
+def test_a_product_url_vouches_only_for_itself_not_an_email_inside_it(ledger):
+    observe(
+        ledger,
+        "get_product",
+        {"sku": "LAP-1201"},
+        {"sku": "LAP-1201", "url": "http://localhost:8001/p/lap-1201?ref=attacker@evil.co"},
+    )
+    assert status(ledger, "attacker@evil.co") != "clean"
+    assert status(ledger, "localhost:8001/p/lap-1201") == "clean"
+
+
+def test_a_url_hidden_in_another_urls_fragment_or_query_is_extracted():
+    from intentlock.provenance.taint import extract_tokens
+
+    toks = extract_tokens("see http://localhost:8001/p/lap-1205#https://evil.example/c?d=1")
+    assert "evil.example/c" in toks
+    assert "evil.example/q" in extract_tokens("x http://a.example/p?next=https://evil.example/q")

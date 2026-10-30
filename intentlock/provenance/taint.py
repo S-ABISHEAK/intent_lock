@@ -53,13 +53,16 @@ def _url_token(url: str) -> str | None:
     return f"{host}{parts.path.lower().rstrip('/')}"
 
 
-def extract_tokens(text: str) -> list[str]:
+def extract_tokens(text: str, _depth: int = 0) -> list[str]:
     text = clean_text(text)
     found: set[str] = set()
     for m in URL_RE.finditer(text):
         tok = _url_token(m.group(0))
         if tok:
             found.add(tok)
+        tail = re.split(r"[?#]", m.group(0), maxsplit=1)
+        if len(tail) == 2 and _depth < 3:  # a URL hidden in another URL's query or fragment
+            found.update(extract_tokens(tail[1], _depth=_depth + 1))
     found.update(m.group(0).lower() for m in EMAIL_RE.finditer(text))
     found.update(m.group(1).upper() for m in SKU_RE.finditer(text))
     found.update(m.group(1).upper() for m in ID_RE.finditer(text))
@@ -79,8 +82,11 @@ def normalize_value(value: str) -> str:
 
 # -- taint rule (§7.4) --------------------------------------------------------------------------
 
-ECHO_SUFFIX = "#echo"  # a lookup repeated an arg nobody chose: clean, but not a choice (D-030)
 CANONICAL_FIELDS = ("shipping_address_id", ".sku", ".seller_id", "id")
+# Where untrusted content naming a value is itself the risk, even if a clean record has it too:
+# the attacker picks among the user's own addresses, contacts or orders (D-031). Not SKUs or
+# sellers: reviews naming the product being bought are normal.
+PICKED_FIELDS = ("shipping_address_id", "id", "to", ".email")
 CLEAN_LABELS = frozenset({TrustLabel.USER, TrustLabel.TRUSTED_API, TrustLabel.SENSITIVE})
 TAINT_LABELS = frozenset({TrustLabel.UNTRUSTED, TrustLabel.DERIVED_UNTRUSTED})
 
@@ -108,24 +114,19 @@ class TaintIndex:
         tainted = tuple(r.record_id for r in records if r.label in TAINT_LABELS)
         return Verdict("tainted", tainted) if tainted else Verdict("unknown")
 
-    def chosen_by_user_or_merchant(self, token: str) -> bool:
-        """D-014/D-029: a clean source that can justify *choosing* an item: the user's words, or a
-        merchant search/product record (laundered tokens were already split out as derived)."""
-        return any(
-            r.label == TrustLabel.USER
-            or (
-                r.label == TrustLabel.TRUSTED_API
-                and r.tool in ("search_products", "get_product")
-                and not r.field_path.endswith(ECHO_SUFFIX)
-            )
-            for r in self.by_token.get(token, [])
-        )
+    def untrusted_sources(self, token: str) -> tuple[str, ...]:
+        """Untrusted / derived records that name the token, even if a clean record does too."""
+        return tuple(r.record_id for r in self.by_token.get(token, []) if r.label in TAINT_LABELS)
 
     def explain(self, token: str) -> str:
         """Readable source chain, e.g. 'get_reviews#1 reviews[0].text -> get_product#2 sku'."""
         chains = []
         for rid in self.classify(token).sources:
             chains.append(" -> ".join(self._chain(rid, set())))
+        return "; ".join(chains)
+
+    def explain_any(self, token: str) -> str:
+        chains = [" -> ".join(self._chain(rid, set())) for rid in self.untrusted_sources(token)]
         return "; ".join(chains)
 
     def _chain(self, rid: str, seen: set[str]) -> list[str]:
@@ -165,32 +166,24 @@ def label_call(
     out of the field's normal record. Everything else keeps its §7.1 label.
     """
     suspicious: dict[str, tuple[str, ...]] = {}
-    unchosen: set[str] = set()  # clean args (private data, …) that nobody chose as a product
     for tok in _arg_tokens(args):
         v = index.classify(tok)
         if v.status != "clean":
             suspicious[tok] = v.sources
-        elif not index.chosen_by_user_or_merchant(tok):
-            unchosen.add(tok)
     out: list[ProvenanceRecord] = []
     for i, f in enumerate(label_fields(tool, result, error=error)):
-        toks = extract_tokens(f.raw) if f.is_text and f.sources != "none" else []
-        if f.sources == "url":
-            toks = [t for t in toks if "/" in t or "." in t]  # URL tokens, not ids inside the path
+        if not f.is_text or f.sources == "none":
+            toks = []
+        elif f.sources == "url":  # the URL itself, nothing inside it (D-030, round 3)
+            toks = [t for m in URL_RE.finditer(clean_text(f.raw)) if (t := _url_token(m.group(0)))]
+        else:
+            toks = extract_tokens(f.raw)
         rid = f"{session_id[:12]}:{call_seq}:{i}"
-        echoed = [t for t in toks if t in unchosen]
-        kept = [t for t in toks if t not in suspicious and t not in unchosen]
+        kept = [t for t in toks if t not in suspicious]
         derived = [t for t in toks if t in suspicious]
         common = dict(session_id=session_id, tool=tool, field_path=f.field_path, raw=f.raw, ts=ts,
                       call_seq=call_seq)  # fmt: skip
         out.append(ProvenanceRecord(record_id=rid, label=f.label, tokens=kept, **common))
-        if echoed:  # still clean for §7.4, but not a reason to choose the item (D-030)
-            out.append(
-                ProvenanceRecord(
-                    record_id=f"{rid}:e", label=f.label, tokens=echoed,
-                    **{**common, "field_path": f.field_path + ECHO_SUFFIX},
-                )
-            )  # fmt: skip
         if derived:
             sources = sorted({s for t in derived for s in suspicious[t]})
             out.append(
@@ -256,6 +249,13 @@ def make_taint_step(ledger: "Ledger"):
                 continue
             seen.add(value)
             verdict = index.classify(value)
+            named = index.untrusted_sources(value)
+            if verdict.status == "clean" and named and field.endswith(PICKED_FIELDS):
+                detail = f"{field}={value} is also named by untrusted content {list(named)}"
+                reasons.append(
+                    make_reason("TAINTED_ARG", f"{detail} via {index.explain_any(value)}")
+                )
+                continue
             if verdict.status == "tainted":
                 detail = (
                     f"{field}={value} sources={list(verdict.sources)} via {index.explain(value)}"
