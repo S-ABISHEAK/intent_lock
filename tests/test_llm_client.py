@@ -268,3 +268,10 @@ def test_weak_model_client_needs_its_own_configuration(tmp_path):
     weak = LLMClient.weak(s)
     assert str(weak._client.base_url).startswith("https://weak.example/v1")
     assert weak.default_model == "w-1"
+
+
+def test_the_real_sdk_client_does_not_retry_on_its_own_and_has_a_timeout():
+    from intentlock.llm.client import REQUEST_TIMEOUT_S
+
+    c = LLMClient(Settings(model_api_key="k"))
+    assert c._client.max_retries == 0 and c._client.timeout == REQUEST_TIMEOUT_S

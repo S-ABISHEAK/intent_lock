@@ -24,6 +24,7 @@ from intentlock.config import Settings
 T = TypeVar("T", bound=BaseModel)
 
 MAX_RETRIES = 2
+REQUEST_TIMEOUT_S = 60.0
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
 
@@ -47,6 +48,8 @@ class LLMClient:
         self._client = client or openai.OpenAI(
             base_url=base_url or settings.model_base_url,
             api_key=(api_key if api_key is not None else settings.model_api_key) or "unset",
+            timeout=REQUEST_TIMEOUT_S,
+            max_retries=0,  # we retry ourselves (MAX_RETRIES); SDK retries would multiply them
         )
         self._sleep = sleep
         self.mode = "json_schema"  # becomes "json_only" if the endpoint rejects response_format

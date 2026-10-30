@@ -30,6 +30,7 @@ import httpx
 from intentlock.config import Settings
 from intentlock.connector.shop_connector import ShopConnector
 
+COMPILE_TIMEOUT_S = 180.0  # a Muse structured-output call (with retries) can take a while
 DEMO_MANDATE = Path(__file__).resolve().parent.parent / "eval" / "tasks" / "demo_mandate.json"
 Confirm = Callable[[dict[str, Any]], bool]
 
@@ -87,7 +88,9 @@ def describe(card: dict[str, Any]) -> str:
 def format_receipt(r: dict[str, Any]) -> str:
     p, kind = r["payload"], r["kind"]
     if kind == "mandate":
-        what = f"session {p['session_id'][:8]} config={p['config']}"
+        what = f"session {p['session_id'][:8]} config={p.get('config')}"
+        if "promptguard" in p:
+            what += f" promptguard={p['promptguard']}"
     elif kind == "tool_result":
         what = f"{p['tool']}" + (f"  ERROR {p['error']}" if "error" in p else "")
     elif kind == "proposal":
@@ -192,7 +195,64 @@ def explain(exc: httpx.HTTPError, s: Settings) -> str:
         )
     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 409:
         return "the gateway is busy with a pending approval; approve or reject it first."
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            detail = exc.response.json().get("detail", exc.response.text)
+        except ValueError:
+            detail = exc.response.text
+        return f"gateway returned {exc.response.status_code}: {safe_text(str(detail))[:500]}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "timed out waiting for the gateway; the model may be slow (see `make dev` output)"
     return f"request failed: {exc}"
+
+
+MAX_QUESTION_ROUNDS = 3
+
+
+def compile_text(s: Settings, c: httpx.Client, text: str) -> dict[str, Any]:
+    r = c.post(
+        f"{s.gateway_url}/mandate/compile",
+        json={"user_text": text},
+        headers={"X-Operator-Token": s.operator_token},
+        timeout=COMPILE_TIMEOUT_S,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def run_mandate(s: Settings, c: httpx.Client, text: str) -> int:
+    """Compile, read back, ask the open questions (SPEC §9 rule 6), confirm. Answers are appended to
+    the request as the user's own words and the whole thing is compiled and grounded again."""
+    for _ in range(MAX_QUESTION_ROUNDS):
+        body = compile_text(s, c, text)
+        print(format_readback(body["readback"]))
+        if not body["clarifications"]:
+            break
+        print("\nPlease answer (an empty answer stops without confirming):")
+        answered = []
+        for q in body["clarifications"]:
+            answer = input(f"? {safe_text(q)}\n> ").strip()
+            if not answer:
+                print("not confirmed")
+                return 1
+            answered.append(f"{q} {answer}")
+        text = f"{text} {' '.join(answered)}"
+        print("\nRecompiling with your answers...\n")
+    else:
+        print("\nStill unclear after several rounds; please rewrite the request.")
+        return 1
+    if input("\nConfirm this mandate? [y/N] ").strip().lower() != "y":
+        print("not confirmed")
+        return 1
+    mandate = {**body["mandate"], "user_confirmed": True}
+    r = c.post(
+        f"{s.gateway_url}/session",
+        json={"mandate": mandate},
+        headers={"X-Operator-Token": s.operator_token},
+    )
+    r.raise_for_status()
+    print(f"session {r.json()['session_id']} started with your confirmed mandate")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -263,25 +323,7 @@ def _run(s: Settings, argv: list[str] | None) -> int:
             print(start_session(s.gateway_url, s.operator_token, DEMO_MANDATE, c))
             return 0
         if args.cmd == "mandate":
-            r = c.post(
-                f"{s.gateway_url}/mandate/compile", json={"user_text": args.text}, headers=op
-            )
-            r.raise_for_status()
-            body = r.json()
-            print(format_readback(body["readback"]))
-            if body["clarifications"]:
-                print(
-                    "\nAnswer the questions above by rewriting your request, then run this again."
-                )
-                return 1
-            if input("\nConfirm this mandate? [y/N] ").strip().lower() != "y":
-                print("not confirmed")
-                return 1
-            mandate = {**body["mandate"], "user_confirmed": True}
-            r = c.post(f"{s.gateway_url}/session", json={"mandate": mandate}, headers=op)
-            r.raise_for_status()
-            print(f"session {r.json()['session_id']} started with your confirmed mandate")
-            return 0
+            return run_mandate(s, c, args.text)
         if args.cmd == "timeline":
             receipts = c.get(f"{s.gateway_url}/receipts", headers=op)
             receipts.raise_for_status()

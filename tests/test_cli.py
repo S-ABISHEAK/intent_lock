@@ -41,7 +41,7 @@ def test_timeline_lines_are_readable():
         {
             "seq": 0,
             "kind": "mandate",
-            "payload": {"session_id": "abcdef123", "config": "r2_session"},
+            "payload": {"session_id": "abcdef123", "config": "r2_session", "promptguard": "on"},
         },
         {"seq": 1, "kind": "tool_result", "payload": {"tool": "get_reviews"}},
         {
@@ -67,7 +67,7 @@ def test_timeline_lines_are_readable():
         },
     ]
     out = "\n".join(cli.format_receipt(r) for r in rows)
-    assert "config=r2_session" in out and "dropped=['total']" in out
+    assert "config=r2_session" in out and "promptguard=on" in out and "dropped=['total']" in out
     assert "REVIEW ['RULE_OF_TWO']" in out and "signed" in out and "executed=True" in out
 
 
@@ -193,3 +193,104 @@ def test_readback_lines_print_with_their_quoted_spans():
     ]
     out = cli.format_readback(lines)
     assert '"you can buy accessories"' in out and "Which colour?" in out and "Not granted" in out
+
+
+def test_gateway_errors_and_timeouts_are_explained():
+    s = Settings(gateway_url="http://gw", approver_url="http://ap")
+    req = httpx.Request("POST", "http://gw/mandate/compile")
+    exc = httpx.HTTPStatusError(
+        "502",
+        request=req,
+        response=httpx.Response(
+            502, json={"detail": "could not draft a mandate: LLMError"}, request=req
+        ),
+    )
+    assert "502" in cli.explain(exc, s) and "could not draft" in cli.explain(exc, s)
+    assert "timed out" in cli.explain(httpx.ReadTimeout("slow", request=req), s)
+
+
+# -- mandate readback: questions are asked, answers become the user's own words (SPEC §9 rule 6) --
+def test_mandate_asks_each_question_recompiles_with_the_answers_then_confirms(monkeypatch, capsys):
+    import json as _json
+
+    monkeypatch.setenv("GATEWAY_OPERATOR_TOKEN", "o")
+    monkeypatch.setenv("APPROVER_UI_TOKEN", "u")
+    compiled_texts, sessions = [], []
+    base = {"mandate": {"user_text": "x", "user_confirmed": False}, "readback": [], "issues": []}
+
+    def handler(request):
+        body = _json.loads(request.content or b"{}")
+        if request.url.path == "/mandate/compile":
+            compiled_texts.append(body["user_text"])
+            questions = ["How many laptops?"] if len(compiled_texts) == 1 else []
+            return httpx.Response(
+                200,
+                json={
+                    **base,
+                    "mandate": {"user_text": body["user_text"], "user_confirmed": False},
+                    "clarifications": questions,
+                },
+            )
+        if request.url.path == "/session":
+            sessions.append(body["mandate"])
+            return httpx.Response(200, json={"session_id": "s-1"})
+        raise AssertionError(request.url)
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        cli.httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(handler))
+    )
+    answers = iter(["just one", "y"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    assert cli.main(["mandate", "Buy a laptop."]) == 0
+    assert compiled_texts == ["Buy a laptop.", "Buy a laptop. How many laptops? just one"]
+    assert sessions and sessions[0]["user_confirmed"] is True
+
+
+def test_mandate_gives_up_after_three_rounds_of_questions(monkeypatch, capsys):
+    monkeypatch.setenv("GATEWAY_OPERATOR_TOKEN", "o")
+    monkeypatch.setenv("APPROVER_UI_TOKEN", "u")
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "mandate": {"user_confirmed": False},
+                "readback": [],
+                "issues": [],
+                "clarifications": ["Still unclear?"],
+            },
+        )
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        cli.httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": "hmm")
+    assert cli.main(["mandate", "Buy something."]) == 1
+
+
+def test_an_empty_answer_stops_without_confirming(monkeypatch):
+    monkeypatch.setenv("GATEWAY_OPERATOR_TOKEN", "o")
+    monkeypatch.setenv("APPROVER_UI_TOKEN", "u")
+    posted = []
+
+    def handler(request):
+        if request.url.path == "/session":
+            posted.append(1)
+        return httpx.Response(
+            200,
+            json={
+                "mandate": {"user_confirmed": False},
+                "readback": [],
+                "issues": [],
+                "clarifications": ["How many?"],
+            },
+        )
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        cli.httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    assert cli.main(["mandate", "Buy something."]) == 1 and posted == []
