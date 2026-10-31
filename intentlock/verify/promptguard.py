@@ -21,25 +21,33 @@ log = logging.getLogger(__name__)
 MODEL_ID = "meta-llama/Llama-Prompt-Guard-2-86M"
 THRESHOLD = 500  # per-mille: a score of 0.5 (SPEC §12)
 RECENT_CALLS = 5
+CHUNK = 1000  # characters; well under the model's 512-token window even for dense scripts
 Scorer = Callable[[str], int]
+last_load_error: str | None = None  # why the model didn't load (token redacted), for diagnostics
 
 
 def load_hf_scorer(token: str | None = None) -> Scorer | None:
     """The real model on CPU via transformers, or None if it isn't installed or access is gated."""
+    global last_load_error
     try:
         from transformers import pipeline  # optional extra: .[promptguard]
-    except ImportError:
+    except ImportError as exc:
+        last_load_error = f"transformers not installed ({exc})"
         return None
     try:
-        clf = pipeline("text-classification", model=MODEL_ID, token=token or None, truncation=True)
-    except Exception:  # gated, offline, wrong token: the feature stays off, it never ALLOWs
+        clf = pipeline("text-classification", model=MODEL_ID, token=token or None)
+    except Exception as exc:  # gated, offline, wrong token: the feature stays off, it never ALLOWs
+        message = f"{type(exc).__name__}: {exc}"
+        if token:
+            message = message.replace(token, "<HF_TOKEN>")
+        last_load_error = message[:600]
         log.warning("Prompt Guard 2 could not be loaded; step 9 is off")
         return None
 
     def score(text: str) -> int:
         best = 0
-        for i in range(0, max(len(text), 1), 2000):  # long texts: score each chunk, keep the max
-            out = clf(text[i : i + 2000])[0]
+        for i in range(0, max(len(text), 1), CHUNK):  # long texts: score each chunk, keep the max
+            out = clf(text[i : i + CHUNK], truncation=True)[0]
             label, p = str(out["label"]).lower(), float(out["score"])
             malicious = p if ("malicious" in label or label.endswith("1")) else 1.0 - p
             best = max(best, round(malicious * 1000))
@@ -92,9 +100,15 @@ def make_promptguard_step(ledger: Ledger):
         }
         reasons, seen = [], set()
         for r in sorted(records, key=lambda x: (x.call_seq, x.record_id)):
-            if r.label not in TAINT_LABELS or r.pg_score_permille is None:
+            if r.label not in TAINT_LABELS or not r.raw.strip():
                 continue
             in_scope = r.record_id in feeding or r.call_seq > latest - RECENT_CALLS
+            if in_scope and r.pg_score_permille is None and r.raw not in seen:
+                seen.add(r.raw)  # the scorer failed on it: escalate rather than silently pass
+                reasons.append(make_reason("INJECTION_SUSPECTED", f"{r.record_id} unscored"))
+                continue
+            if r.pg_score_permille is None:
+                continue
             if in_scope and r.pg_score_permille >= THRESHOLD and r.raw not in seen:
                 seen.add(r.raw)
                 detail = (

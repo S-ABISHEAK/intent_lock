@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from intentlock.approvals.broker import ApprovalBroker
 from intentlock.approvals.verify import NonceStore, load_verify_key
@@ -23,7 +23,7 @@ from intentlock.db import Database
 from intentlock.llm.client import LLMClient
 from intentlock.mandate.compiler import CompileError, compile_mandate, readback
 from intentlock.mandate.grounding import GroundingReport, ground
-from intentlock.models import Approval, ApprovalRequest, Mandate
+from intentlock.models import Approval, ApprovalRequest, Mandate, Paise
 from intentlock.provenance.ledger import Ledger
 from intentlock.proxy.mcp_proxy import Gateway, GatewayBusy, build_gateway_mcp
 from intentlock.receipts import ReceiptLog, verify_chain
@@ -32,10 +32,23 @@ from intentlock.verify.promptguard import resolve_promptguard
 
 class SessionReq(BaseModel):
     mandate: Mandate | None = None
+    # The auto-approve limit as the user typed it in the readback (D-037); must equal the mandate's.
+    confirm_auto_approve_paise: Paise | None = None
+
+
+# Bounded so the grounding regexes stay fast on any input (D-037 final review).
+MAX_REQUEST_CHARS = 2_000
+MAX_MANDATE_TEXT_CHARS = 8_000
+
+
+class Answer(BaseModel):
+    question: str = Field(max_length=1_000)
+    answer: str = Field(max_length=500)
 
 
 class CompileReq(BaseModel):
-    user_text: str
+    user_text: str = Field(max_length=MAX_REQUEST_CHARS)
+    answers: list[Answer] = Field(default=[], max_length=30)
 
 
 def report_json(report: GroundingReport) -> dict:
@@ -62,7 +75,7 @@ def create_app(
     broker: ApprovalBroker,
     *,
     operator_token: str,
-    compiler: Callable[[str], GroundingReport] | None = None,
+    compiler: Callable[..., GroundingReport] | None = None,
 ) -> FastAPI:
     mcp = build_gateway_mcp(gateway)
     mcp_app = mcp.streamable_http_app()
@@ -94,6 +107,8 @@ def create_app(
     @app.post("/session", dependencies=guarded)
     def start_session(req: SessionReq) -> dict:
         if req.mandate is not None:  # SPEC §9 / D-026: only grounded, confirmed mandates
+            if len(req.mandate.user_text) > MAX_MANDATE_TEXT_CHARS:
+                raise HTTPException(422, "the request text is too long")
             report = ground(req.mandate)
             if report.mandate != req.mandate or report.clarifications:
                 raise HTTPException(
@@ -101,6 +116,11 @@ def create_app(
                 )
             if not req.mandate.user_confirmed:
                 raise HTTPException(422, "the user has not confirmed this mandate")
+            auto = req.mandate.auto_approve_under_paise
+            if auto and req.confirm_auto_approve_paise != auto:
+                raise HTTPException(
+                    422, "type the auto-approve amount to confirm purchases without asking"
+                )
         try:
             session_id = gateway.start_session(req.mandate)
         except GatewayBusy:
@@ -114,7 +134,9 @@ def create_app(
         if compiler is None:
             raise HTTPException(503, "no mandate compiler configured")
         try:
-            return report_json(compiler(req.user_text))
+            answers = [a.model_dump() for a in req.answers]
+            report = compiler(req.user_text, answers) if answers else compiler(req.user_text)
+            return report_json(report)
         except CompileError as exc:
             raise HTTPException(502, str(exc)) from None
 
@@ -184,7 +206,9 @@ def build_from_env() -> FastAPI:
     )
     llm = LLMClient(settings)
 
-    def compiler(text: str) -> GroundingReport:
-        return compile_mandate(text, llm, now=int(time.time()), model=settings.model_id)
+    def compiler(text: str, answers: list[dict] | None = None) -> GroundingReport:
+        return compile_mandate(
+            text, llm, now=int(time.time()), model=settings.model_id, answers=answers
+        )
 
     return create_app(gateway, broker, operator_token=settings.operator_token, compiler=compiler)

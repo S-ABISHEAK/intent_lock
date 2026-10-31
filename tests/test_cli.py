@@ -221,7 +221,7 @@ def test_mandate_asks_each_question_recompiles_with_the_answers_then_confirms(mo
     def handler(request):
         body = _json.loads(request.content or b"{}")
         if request.url.path == "/mandate/compile":
-            compiled_texts.append(body["user_text"])
+            compiled_texts.append((body["user_text"], body["answers"]))
             questions = ["How many laptops?"] if len(compiled_texts) == 1 else []
             return httpx.Response(
                 200,
@@ -243,7 +243,13 @@ def test_mandate_asks_each_question_recompiles_with_the_answers_then_confirms(mo
     answers = iter(["just one", "y"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     assert cli.main(["mandate", "Buy a laptop."]) == 0
-    assert compiled_texts == ["Buy a laptop.", "Buy a laptop. How many laptops? just one"]
+    assert (
+        compiled_texts
+        == [  # the original words stay intact; the answer travels with its question
+            ("Buy a laptop.", []),
+            ("Buy a laptop.", [{"question": "How many laptops?", "answer": "just one"}]),
+        ]
+    )
     assert sessions and sessions[0]["user_confirmed"] is True
 
 
@@ -294,3 +300,60 @@ def test_an_empty_answer_stops_without_confirming(monkeypatch):
     )
     monkeypatch.setattr("builtins.input", lambda prompt="": "")
     assert cli.main(["mandate", "Buy something."]) == 1 and posted == []
+
+
+# -- D-037: each widening permission is confirmed on its own; auto-approve needs the typed amount --
+def _mandate_flow(monkeypatch, typed):
+    import json as _json
+
+    from intentlock.mandate.compiler import readback
+    from intentlock.mandate.grounding import ground
+    from tests.factories import grounded_mandate
+
+    monkeypatch.setenv("GATEWAY_OPERATOR_TOKEN", "o")
+    monkeypatch.setenv("APPROVER_UI_TOKEN", "u")
+    report = ground(grounded_mandate(user_confirmed=False))
+    compiled = {
+        "mandate": report.mandate.model_dump(mode="json"),
+        "readback": readback(report),
+        "issues": [],
+        "clarifications": [],
+    }
+    posted = []
+
+    def handler(request):
+        if request.url.path == "/mandate/compile":
+            return httpx.Response(200, json=compiled)
+        posted.append(_json.loads(request.content))
+        return httpx.Response(200, json={"session_id": "s-1"})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        cli.httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(handler))
+    )
+    answers = iter(typed)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    code = cli.main(["mandate", "anything"])
+    return code, posted
+
+
+def test_accepting_each_permission_and_typing_the_amount_posts_it(monkeypatch):
+    code, posted = _mandate_flow(monkeypatch, ["y", "₹2,000", "y"])
+    assert code == 0 and posted[0]["confirm_auto_approve_paise"] == 200_000
+    m = posted[0]["mandate"]
+    assert "checkout" in m["allowed_actions"] and m["auto_approve_under_paise"] == 200_000
+
+
+def test_declined_permissions_are_removed_before_posting(monkeypatch):
+    code, posted = _mandate_flow(monkeypatch, ["n", "", "y"])
+    m = posted[0]["mandate"]
+    assert code == 0 and "checkout" not in m["allowed_actions"]
+    assert m["auto_approve_under_paise"] == 0 and posted[0]["confirm_auto_approve_paise"] is None
+    assert m["grants"] == [] and m["user_confirmed"] is True
+
+
+def test_a_wrong_typed_amount_does_not_skip_approval(monkeypatch):
+    code, posted = _mandate_flow(monkeypatch, ["y", "20000", "y"])
+    m = posted[0]["mandate"]
+    assert m["auto_approve_under_paise"] == 0 and posted[0]["confirm_auto_approve_paise"] is None
+    assert "checkout" in m["allowed_actions"]

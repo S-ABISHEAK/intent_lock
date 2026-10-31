@@ -140,7 +140,12 @@ def run_scenario(w, config, turns, before_approve=None, decide=lambda card: True
     w.store.reset()
     with serve(w.gateway(config)) as gw_url:
         httpx.post(
-            f"{gw_url}/session", json={"mandate": MANDATE.model_dump(mode="json")}, headers=OPH
+            f"{gw_url}/session",
+            json={
+                "mandate": MANDATE.model_dump(mode="json"),
+                "confirm_auto_approve_paise": MANDATE.auto_approve_under_paise,
+            },
+            headers=OPH,
         ).raise_for_status()
         ui = UI(gw_url, w.approver_url, before_approve, decide)
         ui.start()

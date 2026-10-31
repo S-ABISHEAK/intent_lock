@@ -29,8 +29,10 @@ import httpx
 
 from intentlock.config import Settings
 from intentlock.connector.shop_connector import ShopConnector
+from intentlock.mandate.compiler import narrow
+from intentlock.mandate.grounding import parse_money_paise
 
-COMPILE_TIMEOUT_S = 180.0  # a Muse structured-output call (with retries) can take a while
+COMPILE_TIMEOUT_S = 400.0  # a Muse structured-output call (with retries) can take a while
 DEMO_MANDATE = Path(__file__).resolve().parent.parent / "eval" / "tasks" / "demo_mandate.json"
 Confirm = Callable[[dict[str, Any]], bool]
 
@@ -169,10 +171,13 @@ def approve_pending(
 def start_session(
     gateway_url: str, operator_token: str, mandate_path: Path, client: httpx.Client
 ) -> str:
+    """The operator's pre-written mandate file (the demo): its auto-approve limit is stated in the
+    file itself, so it is sent as the typed confirmation (D-037)."""
     mandate = json.loads(mandate_path.read_text(encoding="utf-8"))
+    confirm = mandate.get("auto_approve_under_paise") or None
     r = client.post(
         f"{gateway_url}/session",
-        json={"mandate": mandate},
+        json={"mandate": mandate, "confirm_auto_approve_paise": confirm},
         headers={"X-Operator-Token": operator_token},
     )
     r.raise_for_status()
@@ -209,10 +214,12 @@ def explain(exc: httpx.HTTPError, s: Settings) -> str:
 MAX_QUESTION_ROUNDS = 3
 
 
-def compile_text(s: Settings, c: httpx.Client, text: str) -> dict[str, Any]:
+def compile_text(
+    s: Settings, c: httpx.Client, text: str, answers: list[dict[str, str]] | None = None
+) -> dict[str, Any]:
     r = c.post(
         f"{s.gateway_url}/mandate/compile",
-        json={"user_text": text},
+        json={"user_text": text, "answers": answers or []},
         headers={"X-Operator-Token": s.operator_token},
         timeout=COMPILE_TIMEOUT_S,
     )
@@ -220,34 +227,55 @@ def compile_text(s: Settings, c: httpx.Client, text: str) -> dict[str, Any]:
     return r.json()
 
 
+def confirm_permissions(mandate: dict, lines: list[dict[str, Any]]) -> tuple[dict, int | None]:
+    """Each widening permission is accepted on its own (D-037); declined ones are removed. Skipping
+    approval needs the amount typed back. Returns the narrowed mandate and the typed paise."""
+    typed = None
+    for b in lines:
+        if b["kind"] != "grant" or not b.get("field"):
+            continue
+        what = safe_text(b["text"])
+        if b["field"] == "auto_approve_under_paise":
+            limit = mandate["auto_approve_under_paise"]
+            answer = input(f"\n{what}.\nType the amount to allow this, or Enter to refuse: ")
+            if parse_money_paise(answer) == [limit]:
+                typed = limit
+                continue
+            print("not allowed: every purchase will need your approval")
+        elif input(f"\nAllow: {what}? [y/N] ").strip().lower() == "y":
+            continue
+        mandate = narrow(mandate, b["field"])
+    return mandate, typed
+
+
 def run_mandate(s: Settings, c: httpx.Client, text: str) -> int:
-    """Compile, read back, ask the open questions (SPEC §9 rule 6), confirm. Answers are appended to
-    the request as the user's own words and the whole thing is compiled and grounded again."""
+    """Compile, read back, ask the open questions (SPEC §9 rule 6), confirm. Each typed answer is
+    sent with its question; only the answers count as the user's words (D-036)."""
+    answers: list[dict[str, str]] = []
     for _ in range(MAX_QUESTION_ROUNDS):
-        body = compile_text(s, c, text)
+        body = compile_text(s, c, text, answers)
         print(format_readback(body["readback"]))
         if not body["clarifications"]:
             break
         print("\nPlease answer (an empty answer stops without confirming):")
-        answered = []
         for q in body["clarifications"]:
             answer = input(f"? {safe_text(q)}\n> ").strip()
             if not answer:
                 print("not confirmed")
                 return 1
-            answered.append(f"{q} {answer}")
-        text = f"{text} {' '.join(answered)}"
+            answers.append({"question": q, "answer": answer})
         print("\nRecompiling with your answers...\n")
     else:
         print("\nStill unclear after several rounds; please rewrite the request.")
         return 1
+    mandate, typed = confirm_permissions(body["mandate"], body["readback"])
     if input("\nConfirm this mandate? [y/N] ").strip().lower() != "y":
         print("not confirmed")
         return 1
-    mandate = {**body["mandate"], "user_confirmed": True}
+    mandate = {**mandate, "user_confirmed": True}
     r = c.post(
         f"{s.gateway_url}/session",
-        json={"mandate": mandate},
+        json={"mandate": mandate, "confirm_auto_approve_paise": typed},
         headers={"X-Operator-Token": s.operator_token},
     )
     r.raise_for_status()

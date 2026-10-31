@@ -406,12 +406,13 @@ class Gateway:
         sid = session.session_id
         try:
             seq = self.ledger.next_call_seq(sid)
-            self.ledger.add(
-                label_call(
-                    proposal.tool, {}, result, self.ledger.index(sid), session_id=sid,
-                    call_seq=seq, ts=self.now(),
-                )
+            records = label_call(
+                proposal.tool, {}, result, self.ledger.index(sid), session_id=sid,
+                call_seq=seq, ts=self.now(),
             )  # fmt: skip
+            if self.scorer is not None:  # merchant echoes are untrusted text too
+                records = score_records(records, self.scorer)
+            self.ledger.add(records)
         except Exception:
             log.exception("could not record provenance for an execution result")
             return "withheld: provenance could not be recorded (the action did execute)"

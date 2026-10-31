@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: setup keys doctor dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset smoke
+.PHONY: setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset smoke
 
 setup:
 	uv venv --python 3.11 .venv
@@ -18,6 +18,11 @@ doctor:
 	[ -f "$${APPROVER_PUBLIC_KEY_PATH:-keys/approver.pub}" ] && echo "approver keys: present" || echo "approver keys: MISSING (run make keys)"; \
 	for u in "$${SHOP_URL:-http://localhost:8001}" "$${APPROVER_URL:-http://localhost:8002}" "$${GATEWAY_URL:-http://localhost:8000}"; do \
 	  printf "%s/health: " "$$u"; curl -s -m 2 "$$u/health" || printf "not running"; echo; done
+
+# Load Prompt Guard 2 like the gateway does and score a benign and an injected sample.
+promptguard-check:
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	env -i PATH="$$PATH" HOME="$$HOME" HF_TOKEN="$$HF_TOKEN" $(PY) -m intentlock.verify.pg_check
 
 # Shop (8001), approver (8002) and gateway (8000). Each process starts from an empty environment
 # and gets an explicit allow-list: the approver never sees SHOP_API_KEY, the gateway never sees the

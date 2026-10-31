@@ -131,7 +131,7 @@ def test_threshold_boundary(tmp_path):
         assert ("INJECTION_SUSPECTED" in codes) is expect
 
 
-def test_a_failing_scorer_leaves_records_unscored_and_never_allows_by_itself(tmp_path):
+def test_a_failing_scorer_escalates_instead_of_passing_silently(tmp_path):
     from shop.store import Store
 
     def broken(text):
@@ -141,6 +141,8 @@ def test_a_failing_scorer_leaves_records_unscored_and_never_allows_by_itself(tmp
     out = asyncio.run(gw.call_tool("get_reviews", {"sku": "LAP-1201"}))
     assert "reviews" in out
     assert all(r.pg_score_permille is None for r in gw.ledger.records(gw.session.session_id))
+    _, codes = run(gw, MOUSE[1:])  # the unscored review is in scope: escalate, don't pass silently
+    assert "INJECTION_SUSPECTED" in codes
 
 
 def test_the_feature_on_without_a_scorer_refuses_to_build(tmp_path):
@@ -164,3 +166,47 @@ def test_status_is_recorded_in_the_session_receipt(tmp_path):
     gw = build(tmp_path, Store())
     first = gw.receipts.all()[0].payload
     assert first["promptguard"] == "on"
+
+
+def test_promptguard_check_reports_without_printing_the_token(monkeypatch, capsys):
+    from intentlock.verify import pg_check
+
+    monkeypatch.setenv("HF_TOKEN", "hf_secret_value")
+    assert pg_check.main(loader=lambda: fake_scorer) == 0
+    out = capsys.readouterr().out
+    assert "FLAGGED" in out and "hf_secret_value" not in out
+    assert pg_check.main(loader=lambda: None) == 1
+
+
+def test_load_errors_are_reported_with_the_token_redacted(monkeypatch, capsys):
+    import sys
+    import types
+
+    from intentlock.verify import pg_check, promptguard
+
+    def boom(*a, **k):
+        raise OSError("401 Client Error for token hf_secret_value: gated repo")
+
+    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(pipeline=boom))
+    monkeypatch.setenv("HF_TOKEN", "hf_secret_value")
+    assert pg_check.main() == 1
+    out = capsys.readouterr().out
+    assert "gated repo" in out and "<HF_TOKEN>" in out and "hf_secret_value" not in out
+    assert "hf_secret_value" not in (promptguard.last_load_error or "")
+
+
+def test_execution_results_are_scored_too(tmp_path):
+    from shop.store import Store
+
+    gw = build(tmp_path, Store(), features=frozenset({9}))
+    run(
+        gw,
+        [
+            ("search_products", {"query": "mouse"}),
+            ADDRESSES,
+            ("add_to_cart", {"sku": "MS-1001", "qty": 1}),
+            CHECKOUT,
+        ],
+    )
+    exec_records = [r for r in gw.ledger.records(gw.session.session_id) if r.tool == "checkout"]
+    assert exec_records and any(r.pg_score_permille is not None for r in exec_records)

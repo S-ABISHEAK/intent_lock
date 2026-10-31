@@ -27,6 +27,8 @@ H = {"X-Operator-Token": OP}
 SHOP_KEY = "api-test-shop-key"
 APPROVER = SigningKey.generate()
 MANDATE = grounded_mandate().model_dump(mode="json")
+# D-037: the user typed the ₹2,000 auto-approve limit in the readback
+SESSION = {"mandate": MANDATE, "confirm_auto_approve_paise": MANDATE["auto_approve_under_paise"]}
 
 
 @pytest.fixture
@@ -87,14 +89,14 @@ def test_health_stays_open_and_docs_are_off(env):
 def test_session_with_the_token_works(env):
     gw, broker, _ = env
     c = TestClient(create_app(gw, broker, operator_token=OP))
-    r = c.post("/session", headers=H, json={"mandate": MANDATE})
+    r = c.post("/session", headers=H, json=SESSION)
     assert r.status_code == 200 and gw.session.session_id == r.json()["session_id"]
 
 
 def test_pending_cards_show_what_the_user_is_approving(env):
     gw, broker, store = env
     c = TestClient(create_app(gw, broker, operator_token=OP))
-    c.post("/session", headers=H, json={"mandate": MANDATE})
+    c.post("/session", headers=H, json=SESSION)
     store.add_to_cart("LAP-1201")
     t = threading.Thread(
         target=gw.commit,
@@ -112,7 +114,7 @@ def test_pending_cards_show_what_the_user_is_approving(env):
     assert card["summary"]["reasons"] == ["APPROVAL_REQUIRED"]
 
     # MED 1: the session can't be swapped while a card is pending
-    r = c.post("/session", headers=H, json={"mandate": MANDATE})
+    r = c.post("/session", headers=H, json=SESSION)
     assert r.status_code == 409
 
     signed = sign_request(type(broker.pending()[0]).model_validate(card["request"]), APPROVER)
@@ -129,7 +131,7 @@ def test_pending_cards_show_what_the_user_is_approving(env):
 def test_end_session_rejects_pending_cards(env):
     gw, broker, store = env
     c = TestClient(create_app(gw, broker, operator_token=OP))
-    c.post("/session", headers=H, json={"mandate": MANDATE})
+    c.post("/session", headers=H, json=SESSION)
     store.add_to_cart("LAP-1201")
     result = {}
     t = threading.Thread(
@@ -184,7 +186,8 @@ def test_the_demo_mandate_file_starts_a_session(env):
     from intentlock.cli import DEMO_MANDATE
 
     m = json.loads(DEMO_MANDATE.read_text())
-    assert client_for(env).post("/session", headers=H, json={"mandate": m}).status_code == 200
+    body = {"mandate": m, "confirm_auto_approve_paise": m["auto_approve_under_paise"]}
+    assert client_for(env).post("/session", headers=H, json=body).status_code == 200
 
 
 def test_compile_returns_a_readback_and_an_unconfirmed_mandate(env):
