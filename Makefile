@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: two-channel-check setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset smoke
+.PHONY: weak-smoke two-channel-check setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset smoke
 
 setup:
 	uv venv --python 3.11 .venv
@@ -23,6 +23,12 @@ doctor:
 promptguard-check:
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	env -i PATH="$$PATH" HOME="$$HOME" HF_TOKEN="$$HF_TOKEN" $(PY) -m intentlock.verify.pg_check
+
+# SPEC §13.2 weak baseline agent: one tool-calling turn (key never printed).
+weak-smoke:
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	env -i PATH="$$PATH" HOME="$$HOME" WEAK_MODEL_BASE_URL="$$WEAK_MODEL_BASE_URL" \
+	WEAK_MODEL_API_KEY="$$WEAK_MODEL_API_KEY" WEAK_MODEL_ID="$$WEAK_MODEL_ID" $(PY) -m intentlock.llm.weak_smoke
 
 # SPEC §11 live check: Playwright screenshots of the clean/P3/P4 pages, read by Muse.
 two-channel-check:
