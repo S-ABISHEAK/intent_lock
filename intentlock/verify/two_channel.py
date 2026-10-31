@@ -12,6 +12,7 @@ import concurrent.futures
 import importlib.util
 import logging
 import os
+import re
 from collections.abc import Callable, MutableMapping
 from difflib import SequenceMatcher
 
@@ -26,8 +27,11 @@ TIMEOUT_S = 45.0
 PageReader = Callable[[Quote], PageFacts]
 
 
+QTY_SUFFIX = re.compile(r"\s*\(?\s*[x×]\s*\d+\s*\)?\s*$", re.IGNORECASE)  # "× 1", "(x1)"
+
+
 def _title(text: str) -> str:
-    return " ".join(clean_text(text).lower().split())
+    return " ".join(QTY_SUFFIX.sub("", clean_text(text)).lower().split())
 
 
 def _same_title(a: str, b: str) -> bool:

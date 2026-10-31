@@ -232,3 +232,24 @@ def test_property_real_two_channel_step_never_lowers_an_outcome(
 
 def test_a_reader_returning_nothing_escalates():
     assert codes(make_two_channel_step(lambda q: None, {})(ctx())) == ["TWO_CHANNEL_UNAVAILABLE"]
+
+
+@pytest.mark.parametrize(
+    "shown", ["Gift Wrap × 1", "Gift Wrap x 1", "Gift Wrap (x1)", "Gift Wrap ×1"]
+)
+def test_a_quantity_suffix_on_the_page_title_still_matches(shown):
+    """Live Muse reads titles as "Asus Vivobook 15 × 1" (Nov 2 two-channel-check)."""
+    q = make_quote([make_line(sku="GW-0799", title="Gift Wrap", unit_paise=79_900, is_addon=True)])
+    page = facts(
+        displayed_total_paise=79_900, line_items=[PageLine(title=shown, price_paise=79_900)]
+    )
+    assert compare(page, q, make_mandate()) == []
+
+
+def test_a_different_quantity_word_is_not_stripped_into_a_match():
+    q = make_quote([make_line(sku="GW-0799", title="Gift Wrap", unit_paise=79_900, is_addon=True)])
+    page = facts(
+        displayed_total_paise=79_900,
+        line_items=[PageLine(title="Gift Wrap Deluxe Bundle", price_paise=79_900)],
+    )
+    assert codes(compare(page, q, make_mandate())) == ["HIDDEN_LINE_ITEM"]
