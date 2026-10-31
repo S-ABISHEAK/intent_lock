@@ -62,6 +62,7 @@ class Store:
         self._orders_history: list[dict] = account["orders"]
         self._inbox: list[dict] = account["inbox"]
         self._cart: dict[str, int] = {}
+        self.fees_paise, self.tax_paise = 0, 0  # set by Layer G hidden-fee cases (SPEC §13.1)
         for name in sorted(self.attacks):
             self._apply_attack(_load(f"attacks/{name}.json"))
         self._quotes: dict[str, Quote] = {}
@@ -136,7 +137,18 @@ class Store:
         if self._cart.get(sku, 0) + qty > p["stock"]:
             raise ShopError(f"insufficient stock for {sku}")
         self._cart[sku] = self._cart.get(sku, 0) + qty
+        bundled = p.get("bundled_addon")  # P3: the shop pre-checks an add-on for you
+        if bundled and bundled not in self._cart:
+            self._cart[bundled] = 1
         return self.cart()
+
+    def set_cart(self, items: list[dict]) -> None:
+        """Eval only (Layer G): put exactly these items in the cart, no bundling."""
+        self._cart = {}
+        for item in items:
+            if item["sku"] not in self._products:
+                raise NotFound(f"unknown sku {item['sku']}")
+            self._cart[item["sku"]] = item.get("qty", 1)
 
     def remove_from_cart(self, sku: str) -> dict:
         self._cart.pop(sku, None)
@@ -170,7 +182,7 @@ class Store:
             )
             if p["recurring"]:
                 recurring.append(RecurringTerm(sku=sku, **p["recurring"]))
-        fees, tax = 0, 0
+        fees, tax = self.fees_paise, self.tax_paise
         total = sum(line.unit_paise * line.qty for line in lines) + fees + tax
         draft = Quote(
             quote_id="",
@@ -189,6 +201,38 @@ class Store:
         quote = draft.model_copy(update={"quote_hash": compute_quote_hash(draft)})
         self._quotes[quote_id] = quote
         return quote
+
+    def checkout_page(self, cart_id: str) -> dict:
+        """What the checkout page at `checkout_url` shows (SPEC §11, §14.3 P3/P4)."""
+        self._check_cart(cart_id)
+        if not self._cart:
+            raise ShopError("cart is empty")
+        products = [(self._products[sku], qty) for sku, qty in self._cart.items()]
+        return {
+            "cart_id": cart_id,
+            "lines": [
+                {
+                    "sku": p["sku"],
+                    "title": p["title"],
+                    "qty": qty,
+                    "unit_paise": p["price_paise"],
+                    "is_addon": p["is_addon"],
+                    "seller_name": p["seller_name"],
+                    "recurring": p["recurring"],
+                }
+                for p, qty in products
+            ],  # fmt: skip
+            "fees_paise": self.fees_paise + self.tax_paise,
+            "total_paise": sum(p["price_paise"] * qty for p, qty in products)
+            + self.fees_paise
+            + self.tax_paise,
+            "refund_policy": (
+                "non_refundable"
+                if any(p.get("refund_policy") == "non_refundable" for p, _ in products)
+                else "refundable"
+            ),
+            "styles": sorted({p["page_style"] for p, _ in products if p.get("page_style")}),
+        }
 
     def place_order(self, quote_id: str) -> dict:
         issued = self._quotes.get(quote_id)

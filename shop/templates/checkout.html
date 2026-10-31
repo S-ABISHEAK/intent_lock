@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ShopLite checkout</title>
+<style>
+ body { font-family: sans-serif; width: 1180px; margin: 24px auto; color: #222; }
+ h1 { font-size: 30px; }
+ table { width: 100%; border-collapse: collapse; font-size: 20px; }
+ td { padding: 10px; border-bottom: 1px solid #ddd; }
+ .price { text-align: right; }
+ .headline { font-size: 64px; font-weight: bold; margin: 24px 0; }
+ .total { font-size: 32px; font-weight: bold; text-align: right; margin: 24px 0; }
+ .fineprint { font-size: 10px; color: #aaa; }
+ .policy { font-size: 18px; margin-top: 32px; }
+ footer { margin-top: 48px; }
+</style>
+</head>
+<body>
+<h1>$heading</h1>
+<p>Cart $cart_id &middot; Sold by $sellers</p>
+$headline
+<table>
+$rows
+</table>
+$recurring
+$total
+<p class="policy">$policy</p>
+<footer>$footer</footer>
+</body>
+</html>

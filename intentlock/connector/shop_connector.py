@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote as urlquote
+from urllib.parse import urlsplit
 
 import httpx
 from mcp import ClientSession
@@ -28,6 +29,22 @@ from intentlock.policy.reasons import make_reason
 from intentlock.policy.tools import sanitize_args
 
 TARGET_KINDS = ("address", "order")
+CHECKOUT_VIEWPORT = {"width": 1280, "height": 1600}  # SPEC §11
+OFFLINE_ARGS = ["--proxy-server=http://127.0.0.1:9", "--proxy-bypass-list=<-loopback>"]
+
+
+def _launch_browser() -> tuple[Any, Any]:
+    from playwright.sync_api import sync_playwright  # optional extra: .[browser]
+
+    pw = sync_playwright().start()
+    try:
+        # every request, loopback included, goes to a closed port: the render is offline
+        return pw, pw.chromium.launch(args=OFFLINE_ARGS)
+    except Exception:
+        pw.stop()
+        raise
+
+
 # Read and cart tools the proxy may forward to the shop MCP server. Commit tools never are (D-012).
 FORWARDABLE_TOOLS = frozenset(
     {
@@ -124,6 +141,55 @@ class ShopConnector:
         if quote.shipping_address_id != shipping_address_id:
             raise ConnectorError("quote is for a different address")
         return quote
+
+    def render_checkout(self, quote: Quote, *, timeout_s: float = 20.0) -> bytes:
+        """Full-page PNG of the quote's own checkout page on the shop (SPEC §11.1).
+
+        The browser never holds the key and never touches the network (invariant 8): the
+        connector fetches the HTML itself (no redirects followed), and Chromium renders that HTML
+        offline with JavaScript off and every request aborted, so popups, redirects, refreshes and
+        subresources go nowhere."""
+        if not self._api_key:
+            raise ConnectorError("shop credentials not configured")
+        shop, page_url = urlsplit(self.base_url), urlsplit(quote.checkout_url)
+        if (
+            (page_url.scheme, page_url.netloc) != (shop.scheme, shop.netloc)
+            or page_url.path != f"/checkout/{quote.cart_id}"
+            or page_url.query
+            or page_url.fragment
+        ):
+            raise ConnectorError("the checkout page is not the shop's page for this quote")
+        try:
+            resp = self._client.get(
+                page_url.path,
+                headers={"X-API-Key": self._api_key},
+                timeout=timeout_s,
+                follow_redirects=False,  # whatever client is injected
+            )
+        except httpx.HTTPError as exc:
+            raise ConnectorError(f"checkout page unreachable: {type(exc).__name__}") from None
+        if resp.status_code != 200:
+            raise ConnectorError(f"checkout page returned {resp.status_code}")
+        if not resp.headers.get("content-type", "").startswith("text/html"):
+            raise ConnectorError("checkout page is not HTML")
+        try:
+            pw, browser = _launch_browser()
+        except Exception as exc:
+            raise ConnectorError(f"browser unavailable: {type(exc).__name__}") from None
+        try:
+            context = browser.new_context(viewport=CHECKOUT_VIEWPORT, java_script_enabled=False)
+            context.route("**/*", lambda route: route.abort())
+            page = context.new_page()
+            context.on("page", lambda extra: extra is page or extra.close())  # no popups
+            page.set_content(resp.text, timeout=timeout_s * 1000, wait_until="load")
+            return page.screenshot(full_page=True, type="png", timeout=timeout_s * 1000)
+        except Exception as exc:  # no browser detail
+            raise ConnectorError(
+                f"checkout page could not be rendered: {type(exc).__name__}"
+            ) from None
+        finally:
+            browser.close()
+            pw.stop()
 
     def reset_shop(self, attacks: list[str] | None = None) -> None:
         """Demo/eval only: initial state, optionally with SPEC §14.3 attack fixtures."""

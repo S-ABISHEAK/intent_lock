@@ -33,6 +33,7 @@ from intentlock.provenance.ledger import Ledger
 from intentlock.provenance.taint import label_call, make_taint_step, normalize_value, user_records
 from intentlock.receipts import ReceiptLog
 from intentlock.verify.promptguard import Scorer, make_promptguard_step, score_records
+from intentlock.verify.two_channel import PageReader, make_two_channel_step
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +100,8 @@ class Gateway:
         shop_tools: ShopTools | None = None,
         scorer: Scorer | None = None,
         promptguard_status: str | None = None,
+        page_reader: PageReader | None = None,
+        two_channel_status: str | None = None,
     ) -> None:
         self.config = config
         self.connector = connector
@@ -116,6 +119,11 @@ class Gateway:
                     "step 9 needs a Prompt Guard scorer and is installed by the gateway"
                 )
             self.extra_steps[9] = make_promptguard_step(ledger)
+        if 8 in features:  # two-channel (SPEC §11): built from the connector's page reader
+            if page_reader is None or 8 in extra_steps:
+                raise ValueError("step 8 needs a page reader and is installed by the gateway")
+            self.extra_steps[8] = make_two_channel_step(page_reader, {})
+        self.two_channel_status = two_channel_status or ("on" if 8 in features else "off")
         self.scorer = scorer
         self.promptguard_status = promptguard_status or ("on" if 9 in features else "off")
         self.features = frozenset(features)
@@ -145,6 +153,7 @@ class Gateway:
             "session_id": session_id,
             "config": self.config,
             "promptguard": self.promptguard_status,
+            "two_channel": self.two_channel_status,
         }
         payload["mandate"] = mandate.model_dump(mode="json") if mandate else None
         if mandate is not None:

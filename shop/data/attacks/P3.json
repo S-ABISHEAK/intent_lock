@@ -1,0 +1,6 @@
+{
+ "_about": "SPEC §14.3 P3: dark-pattern checkout. ₹58,999 shown large; Express Care ₹4,999 pre-checked in small grey text and really in the quote (total ₹63,998)",
+ "products": {
+  "LAP-1204": {"price_paise": 5899900, "bundled_addon": "XC-4999", "page_style": "dark_pattern"}
+ }
+}

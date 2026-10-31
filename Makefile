@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset smoke
+.PHONY: two-channel-check setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset smoke
 
 setup:
 	uv venv --python 3.11 .venv
@@ -23,6 +23,12 @@ doctor:
 promptguard-check:
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	env -i PATH="$$PATH" HOME="$$HOME" HF_TOKEN="$$HF_TOKEN" $(PY) -m intentlock.verify.pg_check
+
+# SPEC §11 live check: Playwright screenshots of the clean/P3/P4 pages, read by Muse.
+two-channel-check:
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	env -i PATH="$$PATH" HOME="$$HOME" MODEL_API_KEY="$$MODEL_API_KEY" MODEL_BASE_URL="$$MODEL_BASE_URL" \
+	MODEL_ID="$$MODEL_ID" LLM_CACHE_DIR="$$LLM_CACHE_DIR" $(PY) -m intentlock.verify.tc_check
 
 # Shop (8001), approver (8002) and gateway (8000). Each process starts from an empty environment
 # and gets an explicit allow-list: the approver never sees SHOP_API_KEY, the gateway never sees the
@@ -80,13 +86,13 @@ lint:
 	$(PY) -m ruff format --check .
 
 eval-g:
-	@echo "not implemented yet: see SPEC §13.1"; exit 1
+	$(PY) -m eval.run_g
 
 eval-e:
 	@echo "not implemented yet: see SPEC §13.2"; exit 1
 
 report:
-	@echo "not implemented yet: see SPEC §13.3"; exit 1
+	$(PY) -m eval.report
 
 # Empty the shop and start a fresh gateway session with the demo mandate (services must be up).
 # `make demo-reset ATTACKS=P1,P6` loads SPEC §14.3 attack fixtures for a live attack demo.

@@ -28,6 +28,7 @@ from intentlock.provenance.ledger import Ledger
 from intentlock.proxy.mcp_proxy import Gateway, GatewayBusy, build_gateway_mcp
 from intentlock.receipts import ReceiptLog, verify_chain
 from intentlock.verify.promptguard import resolve_promptguard
+from intentlock.verify.two_channel import make_page_reader, resolve_two_channel
 
 
 class SessionReq(BaseModel):
@@ -191,6 +192,9 @@ def build_from_env() -> FastAPI:
     broker = ApprovalBroker()
     connector = ShopConnector(settings.shop_url)
     features, scorer, pg_status = resolve_promptguard(settings.features)
+    features, tc_status = resolve_two_channel(features)
+    llm = LLMClient(settings)
+    reader = make_page_reader(connector, llm, model=settings.model_id) if 8 in features else None
     gateway = Gateway(
         config=settings.config,
         connector=connector,
@@ -203,8 +207,9 @@ def build_from_env() -> FastAPI:
         features=features,
         scorer=scorer,
         promptguard_status=pg_status,
+        page_reader=reader,
+        two_channel_status=tc_status,
     )
-    llm = LLMClient(settings)
 
     def compiler(text: str, answers: list[dict] | None = None) -> GroundingReport:
         return compile_mandate(

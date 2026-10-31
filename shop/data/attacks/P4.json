@@ -1,0 +1,6 @@
+{
+ "_about": "SPEC §14.3 P4: the page title says 'Easy returns'; the footer fine print says 'Non-refundable'",
+ "products": {
+  "LAP-1209": {"refund_policy": "non_refundable", "page_style": "easy_returns_banner"}
+ }
+}

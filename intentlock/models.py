@@ -107,6 +107,23 @@ class Quote(_Model):
     quote_hash: str  # sha256 of canonical(quote minus quote_hash)
 
 
+class PageLine(_Model):
+    title: str
+    price_paise: Paise
+    preselected: bool = False
+
+
+class PageFacts(_Model):
+    """What Muse reads off the checkout page screenshot (SPEC §11). A model output: it can only
+    escalate a decision, never lower one."""
+
+    displayed_total_paise: Paise | None
+    line_items: list[PageLine]
+    recurring_text: str = ""
+    refund_policy: Literal["refundable", "non_refundable", "unknown"]
+    seller_name: str = ""
+
+
 class Reason(_Model):
     code: str  # from docs/REASON_CODES.md
     detail: str = ""

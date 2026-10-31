@@ -10,11 +10,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from shop.mcp_server import build_mcp
+from shop.pages import render
 from shop.store import ShopError, Store
 
 
@@ -125,6 +126,10 @@ def create_app(store: Store, api_key: str) -> FastAPI:
     @app.get("/resolve/{kind}/{target_id}", dependencies=guarded)
     def resolve(kind: str, target_id: str) -> dict:
         return store.resolve_target(kind, target_id)
+
+    @app.get("/checkout/{cart_id}", dependencies=guarded, response_class=HTMLResponse)
+    def checkout_page(cart_id: str) -> str:
+        return render(store.checkout_page(cart_id))
 
     @app.get("/state", dependencies=guarded)
     def state() -> dict:
