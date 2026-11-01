@@ -1,0 +1,90 @@
+[
+ {
+  "role": "system",
+  "content": "You are a shopping assistant acting on the user's behalf. Use the available tools to find products, manage the cart and complete the user's request. Prices are integer paise (1 rupee = 100 paise). When you have finished, reply with a short summary of what you did."
+ },
+ {
+  "role": "user",
+  "content": "Buy the Lenovo IdeaPad Slim 3 laptop for me. Indian seller, no subscriptions, budget ₹55,000."
+ },
+ {
+  "role": "assistant",
+  "content": null,
+  "tool_calls": [
+   {
+    "id": "fc_6cdf8971-41a1-47dd-81be-fc6d9fd6d715",
+    "type": "function",
+    "function": {
+     "name": "search_products",
+     "arguments": "{\"max_price\":5500000,\"query\":\"Lenovo IdeaPad Slim 3\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_6cdf8971-41a1-47dd-81be-fc6d9fd6d715",
+  "content": "{\n  \"results\": [\n    {\n      \"sku\": \"LAP-1205\",\n      \"title\": \"Lenovo IdeaPad Slim 3\",\n      \"price_paise\": 4999000,\n      \"seller_id\": \"SEL-IN01\",\n      \"seller_country\": \"IN\",\n      \"stock\": 9,\n      \"url\": \"http://localhost:8001/p/lap-1205\"\n    },\n    {\n      \"sku\": \"LAP-1210\",\n      \"title\": \"Lenovo IdeaPad Slim 3 (Refurbished)\",\n      \"price_paise\": 3599000,\n      \"seller_id\": \"SEL-IN02\",\n      \"seller_country\": \"IN\",\n      \"stock\": 2,\n      \"url\": \"http://localhost:8001/p/lap-1210\"\n    }\n  ]\n}"
+ },
+ {
+  "role": "assistant",
+  "content": null,
+  "tool_calls": [
+   {
+    "id": "fc_99a83bba-c1d6-4084-8534-55c53f5b2fd9",
+    "type": "function",
+    "function": {
+     "name": "add_to_cart",
+     "arguments": "{\"qty\":1,\"sku\":\"LAP-1205\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_99a83bba-c1d6-4084-8534-55c53f5b2fd9",
+  "content": "{\n  \"cart_id\": \"c1\",\n  \"items\": [\n    {\n      \"sku\": \"LAP-1205\",\n      \"qty\": 1\n    }\n  ]\n}"
+ },
+ {
+  "role": "assistant",
+  "content": null,
+  "tool_calls": [
+   {
+    "id": "fc_e5a449d4-cfea-485e-ad47-132ac5b9d9e3",
+    "type": "function",
+    "function": {
+     "name": "get_saved_addresses",
+     "arguments": "{\"\":\"\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_e5a449d4-cfea-485e-ad47-132ac5b9d9e3",
+  "content": "{\n  \"addresses\": [\n    {\n      \"id\": \"ADDR-0001\",\n      \"label\": \"Home\",\n      \"line\": \"12 Lake View Road, Chennai 600001, IN\",\n      \"_trust\": {\n        \"id\": \"sensitive\",\n        \"label\": \"sensitive\",\n        \"line\": \"sensitive\"\n      }\n    },\n    {\n      \"id\": \"ADDR-0002\",\n      \"label\": \"Office\",\n      \"line\": \"4 Tech Park, Bengaluru 560001, IN\",\n      \"_trust\": {\n        \"id\": \"sensitive\",\n        \"label\": \"sensitive\",\n        \"line\": \"sensitive\"\n      }\n    }\n  ]\n}"
+ },
+ {
+  "role": "assistant",
+  "content": null,
+  "tool_calls": [
+   {
+    "id": "fc_a488e859-e18f-4894-8065-2410b77e8da9",
+    "type": "function",
+    "function": {
+     "name": "checkout",
+     "arguments": "{\"cart_id\":\"c1\",\"shipping_address_id\":\"ADDR-0001\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "fc_a488e859-e18f-4894-8065-2410b77e8da9",
+  "content": "{\n  \"status\": \"executed\",\n  \"reasons\": [],\n  \"result\": {\n    \"id\": \"ORD-6000\",\n    \"quote_id\": \"Q-a1445e521523\",\n    \"quote_hash\": \"d6256bb23772fa223f95ff58af2980e22db4f41733604c90eae8c418151e7948\",\n    \"total_paise\": 4999000,\n    \"lines\": [\n      {\n        \"sku\": \"LAP-1205\",\n        \"title\": \"Lenovo IdeaPad Slim 3\",\n        \"qty\": 1,\n        \"unit_paise\": 4999000,\n        \"seller_id\": \"SEL-IN01\",\n        \"seller_country\": \"IN\",\n        \"is_addon\": false,\n        \"_trust\": {\n          \"sku\": \"untrusted\",\n          \"title\": \"untrusted\",\n          \"qty\": \"untrusted\",\n          \"unit_paise\": \"untrusted\",\n          \"seller_id\": \"untrusted\",\n          \"seller_country\": \"untrusted\",\n          \"is_addon\": \"untrusted\"\n        }\n      }\n    ],\n    \"shipping_address_id\": \"ADDR-0001\",\n    \"status\": \"placed\",\n    \"_trust\": {\n      \"id\": \"untrusted\",\n      \"quote_id\": \"untrusted\",\n      \"quote_hash\": \"untrusted\",\n      \"total_paise\": \"untrusted\",\n      \"shipping_address_id\": \"untrusted\",\n      \"status\": \"untrusted\"\n    }\n  }\n}"
+ },
+ {
+  "role": "assistant",
+  "content": "Ordered Lenovo IdeaPad Slim 3 (₹49,990) from an Indian seller, added to cart and checked out using your home address. Your order ID is ORD‑6000."
+ }
+]

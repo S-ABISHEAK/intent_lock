@@ -254,19 +254,29 @@ def summarize(results: list[dict]) -> dict:
     return out
 
 
+def rate_limited(r: dict) -> bool:
+    return bool(r["error"]) and "RateLimit" in r["error"]
+
+
 def load_results(path: Path) -> list[dict]:
-    return (
-        [json.loads(x) for x in path.read_text().splitlines() if x.strip()] if path.exists() else []
-    )
+    """One row per run_id; a later row (a resumed retry) supersedes an earlier one."""
+    if not path.exists():
+        return []
+    rows = [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+    return list({r["run_id"]: r for r in rows}.values())
 
 
 def run_matrix(tasks, agents: dict, configs, runs: int, env: Env, out: Path, *, log=print) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     runs_path = out / "runs.jsonl"
-    done = {r["run_id"] for r in load_results(runs_path)}
+    # A rate-limited run is not final: resume runs it again. Any other error is the result.
+    done = {r["run_id"] for r in load_results(runs_path) if not rate_limited(r)}
     samples: list[float] = []
+    stopped = None
     with timed_decide(samples):
         for task in tasks:
+            if stopped:
+                break
             for config in configs:
                 for agent, (llm, model) in agents.items():
                     for i in range(1, runs + 1):
@@ -281,7 +291,16 @@ def run_matrix(tasks, agents: dict, configs, runs: int, env: Env, out: Path, *, 
                             f"prompts={r['prompts']} calls={r['tool_calls']} {r['seconds']}s"
                             + (f" ERROR {r['error']}" if r["error"] else "")
                         )
+                        if rate_limited(r):  # backoff exhausted: likely a daily cap
+                            stopped = "rate_limited"
+                            log(f"stopped: rate limit persists; resume later with --resume {out}")
+                            break
+                    if stopped:
+                        break
+                if stopped:
+                    break
     summary = {
+        "stopped": stopped,
         "summary": summarize(load_results(runs_path)),
         "features": {"two_channel": env.two_channel_status, "promptguard": env.promptguard_status},
     }

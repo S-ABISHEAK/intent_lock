@@ -1,7 +1,9 @@
-"""Metrics and the headline table (SPEC §13.3, §13.4). Layer G today; Layer E joins on Nov 3.
+"""Metrics and the headline table (SPEC §13.3, §13.4) for Layer G and Layer E.
 
 Block precision on Layer G = cases where the result == expected / all cases, per category.
 Extra prompts = approval prompts beyond `prompts_required_by_mandate`, on benign cases only.
+Layer E uses the scoring in `eval.run_e.summarize` (errored runs without a decided outcome are
+excluded and counted) and the newest results folder that holds each agent.
 Every number is printed with its n.
 """
 
@@ -74,6 +76,76 @@ def layer_g_table(summary: dict) -> str:
     return "\n".join(out)
 
 
+def pct(k: int, n: int) -> str:
+    return f"{k}/{n} ({100 * k / n:.1f}%)" if n else "-"
+
+
+def layer_e_table(rows: list[dict]) -> str:
+    from eval.run_e import summarize
+
+    summary = summarize(rows)
+    out = []
+    for agent, configs in summary.items():
+        out += [
+            f"Layer E, agent {agent}",
+            "",
+            "| Config | ASR ↓ | Benign completion ↑ | Extra prompts / benign task ↓"
+            " | Errors excluded |",
+            "|---|---|---|---|---|",
+        ]
+        for config in CONFIGS:
+            s = configs.get(config)
+            if s is None:
+                continue
+            out.append(
+                f"| {config} | {pct(s['attacks_succeeded'], s['attack_runs'])} |"
+                f" {pct(s['benign_completed'], s['benign_runs'])} |"
+                f" {s['extra_prompts_per_benign'] if s['benign_runs'] else '-'}"
+                f" (n={s['benign_runs']}) |"
+                f" {s['errors_excluded']} |"
+            )
+        out += ["", "Benign misses:"]
+        for config in CONFIGS:
+            missed = [
+                r
+                for r in rows
+                if r["agent"] == agent
+                and r["config"] == config
+                and r["benign"]
+                and not r["error"]
+                and not r["success"]
+            ]
+            blocked = sum(any(d["outcome"] == "DENY" for d in r["decisions"]) for r in missed)
+            stopped = len(missed) - blocked
+            out.append(f"- {config}: {blocked} blocked by the gateway, {stopped} agent stopped")
+        errors = sorted({r["error"] for r in rows if r["agent"] == agent and r["error"]})
+        out += ["", f"Errors: {errors or 'none'}", ""]
+    return "\n".join(out).rstrip()
+
+
+def _e_dirs(results_dir: Path) -> list[Path]:
+    return sorted(results_dir.glob("*-e"), reverse=True)
+
+
+def e_sources(results_dir: Path = RESULTS_DIR) -> dict[str, str]:
+    from eval.run_e import load_results
+
+    picked: dict[str, str] = {}
+    for d in _e_dirs(results_dir):
+        for agent in {r["agent"] for r in load_results(d / "runs.jsonl")}:
+            picked.setdefault(agent, d.name)
+    return dict(sorted(picked.items()))
+
+
+def latest_e_rows(results_dir: Path = RESULTS_DIR) -> list[dict]:
+    from eval.run_e import load_results
+
+    rows = []
+    for agent, name in e_sources(results_dir).items():
+        rows += [r for r in load_results(results_dir / name / "runs.jsonl") if r["agent"] == agent]
+    return rows
+
+
 def latest(layer: str = "g", results_dir: Path = RESULTS_DIR) -> Path | None:
     runs = sorted(results_dir.glob(f"*-{layer}"))
     return runs[-1] if runs else None
@@ -86,6 +158,10 @@ def main() -> int:
         return 1
     print(f"{run.name}\n")
     print(layer_g_table(json.loads((run / "summary.json").read_text())))
+    sources = e_sources()
+    if sources:
+        print("\n" + ", ".join(f"{a}: {d}" for a, d in sources.items()) + "\n")
+        print(layer_e_table(latest_e_rows()))
     return 0
 
 

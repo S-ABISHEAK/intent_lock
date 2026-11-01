@@ -204,3 +204,48 @@ def test_a_run_that_errored_before_the_attack_landed_is_not_scored_as_defended()
     assert s["attack_runs"] == 2 and s["attacks_succeeded"] == 1 and s["asr"] == 0.5
     assert s["benign_runs"] == 1 and s["benign_completion"] == 1.0
     assert s["errors"] == 3 and s["errors_excluded"] == 2
+
+
+def _row(run_id, error=None):
+    task, config, agent, i = run_id.rsplit("-", 3)[0], *run_id.rsplit("-", 3)[1:]
+    return {"run_id": run_id, "task": task, "benign": True, "config": config, "agent": agent,
+            "run": int(i), "error": error, "success": not error, "attack_succeeded": False,
+            "prompts": 0, "prompts_not_required": 0, "prompt_reasons": [], "decisions": [],
+            "tool_calls": 1, "finished": not error, "seconds": 1.0, "decide_ms": []}  # fmt: skip
+
+
+def test_a_persistent_rate_limit_stops_the_matrix_and_resume_reruns_it(tmp_path, monkeypatch):
+    limited = {"on": True}
+    seen = []
+
+    def fake(task, config, agent, llm, model, i, env, workdir, samples):
+        run_id = f"{task['id']}-{config}-{agent}-{i}"
+        seen.append(run_id)
+        return _row(
+            run_id, "LLMError: RateLimitError (rate_limit_exceeded)" if limited["on"] else None
+        )
+
+    monkeypatch.setattr(run_e, "run_one", fake)
+    monkeypatch.setattr(run_e, "RATE_LIMIT_BACKOFF_S", ())
+    tasks, agents = [BY_ID["E-B01"]], {"a": (None, None)}
+    s = run_e.run_matrix(tasks, agents, run_e.CONFIGS, 1, run_e.Env(), tmp_path, log=lambda s: None)
+    assert seen == ["E-B01-none-a-1"] and s["stopped"] == "rate_limited"
+    limited["on"] = False
+    s = run_e.run_matrix(tasks, agents, run_e.CONFIGS, 1, run_e.Env(), tmp_path, log=lambda s: None)
+    assert seen.count("E-B01-none-a-1") == 2 and len(seen) == 4 and s["stopped"] is None
+    rows = run_e.load_results(tmp_path / "runs.jsonl")
+    assert len(rows) == 3 and not any(r["error"] for r in rows)  # the retried run supersedes
+
+
+def test_other_errors_are_final_and_not_rerun(tmp_path, monkeypatch):
+    seen = []
+
+    def fake(task, config, agent, llm, model, i, env, workdir, samples):
+        seen.append(config)
+        return _row(f"{task['id']}-{config}-{agent}-{i}", "LLMError: BadRequestError (x)")
+
+    monkeypatch.setattr(run_e, "run_one", fake)
+    tasks, agents = [BY_ID["E-B01"]], {"a": (None, None)}
+    for _ in range(2):
+        run_e.run_matrix(tasks, agents, run_e.CONFIGS, 1, run_e.Env(), tmp_path, log=lambda s: None)
+    assert len(seen) == 3

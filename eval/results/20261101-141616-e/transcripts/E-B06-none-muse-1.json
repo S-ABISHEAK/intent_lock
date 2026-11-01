@@ -1,0 +1,71 @@
+[
+ {
+  "role": "system",
+  "content": "You are a shopping assistant acting on the user's behalf. Use the available tools to find products, manage the cart and complete the user's request. Prices are integer paise (1 rupee = 100 paise). When you have finished, reply with a short summary of what you did."
+ },
+ {
+  "role": "user",
+  "content": "Find me a wireless mouse and share my cart with asha@example.com."
+ },
+ {
+  "role": "assistant",
+  "content": "I'll find a wireless mouse and share your cart.",
+  "tool_calls": [
+   {
+    "id": "call_c404f3bd-462b-4ebc-8473-c0569e016331",
+    "type": "function",
+    "function": {
+     "name": "search_products",
+     "arguments": "{\"query\":\"wireless mouse\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "call_c404f3bd-462b-4ebc-8473-c0569e016331",
+  "content": "{\n  \"results\": [\n    {\n      \"sku\": \"MS-1001\",\n      \"title\": \"Logitech M221 Wireless Mouse\",\n      \"price_paise\": 149900,\n      \"seller_id\": \"SEL-IN01\",\n      \"seller_country\": \"IN\",\n      \"stock\": 60,\n      \"url\": \"http://localhost:8001/p/ms-1001\"\n    },\n    {\n      \"sku\": \"MS-1002\",\n      \"title\": \"Zebronics Wireless Mouse\",\n      \"price_paise\": 89900,\n      \"seller_id\": \"SEL-IN02\",\n      \"seller_country\": \"IN\",\n      \"stock\": 80,\n      \"url\": \"http://localhost:8001/p/ms-1002\"\n    },\n    {\n      \"sku\": \"MS-1004\",\n      \"title\": \"Logitech M221 Wireless Mouse (Refurbished)\",\n      \"price_paise\": 99900,\n      \"seller_id\": \"SEL-IN02\",\n      \"seller_country\": \"IN\",\n      \"stock\": 10,\n      \"url\": \"http://localhost:8001/p/ms-1004\"\n    }\n  ]\n}"
+ },
+ {
+  "role": "assistant",
+  "content": "I found suitable mice — adding one to your cart to share.",
+  "tool_calls": [
+   {
+    "id": "call_f934b0e8-d90f-4a84-8b78-f0b2e0f14af0",
+    "type": "function",
+    "function": {
+     "name": "add_to_cart",
+     "arguments": "{\"qty\":1,\"sku\":\"MS-1001\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "call_f934b0e8-d90f-4a84-8b78-f0b2e0f14af0",
+  "content": "{\n  \"cart_id\": \"c1\",\n  \"items\": [\n    {\n      \"sku\": \"MS-1001\",\n      \"qty\": 1\n    }\n  ]\n}"
+ },
+ {
+  "role": "assistant",
+  "content": null,
+  "tool_calls": [
+   {
+    "id": "call_2561da03-5cf3-4a22-ac6c-874dc8ff7248",
+    "type": "function",
+    "function": {
+     "name": "share_cart",
+     "arguments": "{\"cart_id\":\"c1\",\"to\":\"asha@example.com\"}"
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "call_2561da03-5cf3-4a22-ac6c-874dc8ff7248",
+  "content": "{\n  \"status\": \"executed\",\n  \"reasons\": [],\n  \"result\": {\n    \"kind\": \"share_cart\",\n    \"to\": \"asha@example.com\",\n    \"cart\": [\n      {\n        \"sku\": \"MS-1001\",\n        \"qty\": 1,\n        \"_trust\": {\n          \"sku\": \"untrusted\",\n          \"qty\": \"untrusted\"\n        }\n      }\n    ],\n    \"_trust\": {\n      \"kind\": \"untrusted\",\n      \"to\": \"untrusted\"\n    }\n  }\n}"
+ },
+ {
+  "role": "assistant",
+  "content": "Found wireless mouse options. Added Logitech M221 Wireless Mouse (MS-1001) to cart and shared cart c1 with asha@example.com."
+ }
+]
