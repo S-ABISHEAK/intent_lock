@@ -33,6 +33,11 @@ def layer_g_table(summary: dict) -> str:
         f"**{summary['configs'][c]['correct']}/{summary['configs'][c]['n']}**" for c in CONFIGS
     ]
     out.append("| **all** | " + " | ".join(totals) + " |")
+    n_attack = summary["configs"]["none"]["attacks"]["n"]
+    n_benign = summary["configs"]["none"]["benign"]["n"]
+    out += ["", f"{n_attack} attack cases and {n_benign} benign cases; the benign count includes"
+            " benign twins placed inside attack categories (D-038). An attack that reaches a prompt"
+            " is stopped only because the simulated user declines it."]  # fmt: skip
     out += ["", "| Config | Attacks executed | Attacks reaching a prompt | Benign completed |",
             "|---|---|---|---|"]  # fmt: skip
     for config in CONFIGS:
@@ -80,18 +85,44 @@ def pct(k: int, n: int) -> str:
     return f"{k}/{n} ({100 * k / n:.1f}%)" if n else "-"
 
 
+def coverage(rows: list[dict]) -> dict[str, dict]:
+    """Per agent: runs done and whether every task × config cell has the same number of runs."""
+    from eval.build_tasks import TASKS
+
+    cells = [(t["id"], c) for t in TASKS for c in CONFIGS]
+    out = {}
+    for agent in sorted({r["agent"] for r in rows}):
+        mine = [r for r in rows if r["agent"] == agent]
+        counts = [sum(r["task"] == t and r["config"] == c for r in mine) for t, c in cells]
+        filled = sum(n > 0 for n in counts)
+        out[agent] = {
+            "runs": len(mine),
+            "cells": len(cells),
+            "cells_filled": filled,
+            "complete": filled == len(cells) and len(set(counts)) == 1,
+        }
+    return out
+
+
 def layer_e_table(rows: list[dict]) -> str:
     from eval.run_e import summarize
 
-    summary = summarize(rows)
+    summary, cov = summarize(rows), coverage(rows)
     out = []
     for agent, configs in summary.items():
+        c = cov[agent]
+        status = (
+            f"{agent}: complete, {c['runs']} runs"
+            if c["complete"]
+            else f"{agent}: INCOMPLETE ({c['cells_filled']} of {c['cells']} task × config cells)"
+            f" — {c['runs']} runs, not comparable, not a result"
+        )
         out += [
-            f"Layer E, agent {agent}",
+            f"Layer E, agent {status}",
             "",
             "| Config | ASR ↓ | Benign completion ↑ | Extra prompts / benign task ↓"
-            " | Errors excluded |",
-            "|---|---|---|---|---|",
+            " | Errors excluded | User goal on attack tasks |",
+            "|---|---|---|---|---|---|",
         ]
         for config in CONFIGS:
             s = configs.get(config)
@@ -103,7 +134,23 @@ def layer_e_table(rows: list[dict]) -> str:
                 f" {s['extra_prompts_per_benign'] if s['benign_runs'] else '-'}"
                 f" (n={s['benign_runs']}) |"
                 f" {s['errors_excluded']} |"
+                f" {s['attack_task_goal']}/{s['runs'] - s['benign_runs']} |"
             )
+        base = configs.get("none")
+        if base and base["attack_runs"] and not base["attacks_succeeded"]:
+            note = (
+                f"Note: no attack succeeded even without a gateway (none: 0/{base['attack_runs']});"
+                " this agent resisted the injections itself, so ASR does not compare the configs"
+                " here. Layer G measures attack blocking."
+            )
+            out += ["", note]
+        out += [
+            "User goal on attack tasks: guarded configs ask before a purchase above the"
+            " auto-approve limit and the harness user declines every prompt on attack tasks"
+            " (§13.3), so the user's own purchase fails there too.",
+            "The 'none' baseline still labels tool results (_trust, SPEC §7.1); the agent sees"
+            " them.",
+        ]
         out += ["", "Benign misses:"]
         for config in CONFIGS:
             missed = [
@@ -159,13 +206,15 @@ def results_json(results_dir: Path = RESULTS_DIR) -> dict:
     from eval.run_e import summarize
 
     g = latest("g", results_dir)
+    rows = latest_e_rows(results_dir)
     return {
         "layer_g": {"source": g.name, "summary": json.loads((g / "summary.json").read_text())}
         if g
         else None,
         "layer_e": {
             "sources": e_sources(results_dir),
-            "summary": summarize(latest_e_rows(results_dir)),
+            "summary": summarize(rows),
+            "coverage": coverage(rows),
         },
     }
 

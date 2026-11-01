@@ -59,3 +59,26 @@ def test_results_json_carries_both_layers_and_their_sources(tmp_path):
     assert out["layer_g"] == {"source": g.name, "summary": {"configs": {}}}
     assert out["layer_e"]["sources"] == {"muse": "20260102-000000-e"}
     assert out["layer_e"]["summary"]["muse"]["none"]["benign_completed"] == 1
+
+
+def test_an_agent_that_no_attack_fires_against_is_called_out():
+    rows = [row("muse", c, False) for c in ("none", "intentlock")]
+    out = report.layer_e_table(rows)
+    assert "no attack succeeded even without a gateway" in out
+
+
+def test_an_incomplete_agent_is_labelled_not_comparable():
+    from eval.build_tasks import TASKS
+
+    full = [
+        {**row("muse", c, t["benign"]), "run_id": f"{t['id']}-{c}-muse-1", "task": t["id"]}
+        for t in TASKS
+        for c in report.CONFIGS
+    ]
+    part = [
+        {**r, "agent": "weak", "run_id": r["run_id"].replace("muse", "weak")} for r in full[:10]
+    ]
+    cov = report.coverage(full + part)
+    assert cov["muse"]["complete"] and cov["muse"]["runs"] == 60
+    assert not cov["weak"]["complete"] and cov["weak"]["runs"] == 10
+    assert "weak: INCOMPLETE (10 of 60 task × config cells)" in report.layer_e_table(full + part)

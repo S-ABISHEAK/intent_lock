@@ -63,6 +63,25 @@ describe("the dev-server guard in front of the token-injecting proxy", () => {
     }
   });
 
+  it("treats every URL Vite would proxy as proxied, slash or not (Nov 3 review HIGH)", () => {
+    const evil = { host: "127.0.0.1:5173", origin: "http://evil.example", "sec-fetch-site": "cross-site" };
+    for (const [m, u] of [
+      ["POST", "/apisession/end"],
+      ["POST", "/apiapprovals/x/reject"],
+      ["GET", "/apimcp"],
+      ["GET", "/apireceipts"],
+      ["GET", "/api%2fmcp"],
+      ["POST", "/approversign"],
+      ["OPTIONS", "/approversign"],
+      ["GET", "/api"],
+      ["GET", "/api?x=1"],
+      ["GET", "/approver"],
+    ]) {
+      expect(refuse(req(m, u, evil), PORT), `${m} ${u}`).not.toBeNull();
+      expect(refuse(req(m, u), PORT), `${m} ${u} same-origin`).not.toBeNull();
+    }
+  });
+
   it("leaves the page's own assets alone", () => {
     expect(refuse(req("GET", "/src/main.tsx", {}), PORT)).toBeNull();
   });

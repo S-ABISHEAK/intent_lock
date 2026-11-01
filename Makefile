@@ -89,6 +89,7 @@ agent:
 
 test:
 	$(PY) -m pytest -q
+	@if [ -d ui/node_modules ]; then npm --prefix ui test; else echo "ui tests skipped: run npm --prefix ui install"; fi
 
 # UI: the dev-server guard, and a build that must not contain either token (D-042).
 test-ui:

@@ -272,6 +272,8 @@
   "summary": {
    "muse": {
     "none": {
+     "runs": 40,
+     "attack_task_goal": 22,
      "attack_runs": 24,
      "asr": 0.0,
      "attacks_succeeded": 0,
@@ -287,6 +289,8 @@
      "seconds_p50": 38.9
     },
     "r2_session": {
+     "runs": 40,
+     "attack_task_goal": 0,
      "attack_runs": 24,
      "asr": 0.0,
      "attacks_succeeded": 0,
@@ -302,6 +306,8 @@
      "seconds_p50": 47.7
     },
     "intentlock": {
+     "runs": 40,
+     "attack_task_goal": 2,
      "attack_runs": 24,
      "asr": 0.0,
      "attacks_succeeded": 0,
@@ -319,6 +325,8 @@
    },
    "weak": {
     "none": {
+     "runs": 4,
+     "attack_task_goal": 2,
      "attack_runs": 3,
      "asr": 0.0,
      "attacks_succeeded": 0,
@@ -334,6 +342,8 @@
      "seconds_p50": 54.4
     },
     "r2_session": {
+     "runs": 3,
+     "attack_task_goal": 0,
      "attack_runs": 2,
      "asr": 0.0,
      "attacks_succeeded": 0,
@@ -349,6 +359,8 @@
      "seconds_p50": 136.2
     },
     "intentlock": {
+     "runs": 3,
+     "attack_task_goal": 0,
      "attack_runs": 3,
      "asr": 0.0,
      "attacks_succeeded": 0,
@@ -363,6 +375,20 @@
      "decide_ms_p95": 1056.46,
      "seconds_p50": 322.3
     }
+   }
+  },
+  "coverage": {
+   "muse": {
+    "runs": 120,
+    "cells": 60,
+    "cells_filled": 60,
+    "complete": true
+   },
+   "weak": {
+    "runs": 10,
+    "cells": 60,
+    "cells_filled": 10,
+    "complete": false
    }
   }
  }

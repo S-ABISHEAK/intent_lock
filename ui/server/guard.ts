@@ -31,9 +31,12 @@ export function origins(port: number): string[] {
 /** null if the request may go through the proxy, otherwise why not. */
 export function refuse(req: Incoming, port: number): string | null {
   const url = req.url ?? "";
+  // Match the way Vite's proxy picks requests (a raw prefix test, no slash needed) so nothing
+  // can reach the proxy around this guard; only the slash forms can ever be allowed.
+  if (!url.startsWith("/api") && !url.startsWith("/approver")) return null; // page assets
   const gateway = url.startsWith("/api/");
   const approver = url.startsWith("/approver/");
-  if (!gateway && !approver) return null; // page assets: no secrets involved
+  if (!gateway && !approver) return "path not allowed";
 
   const host = one(req.headers.host);
   if (!host || !origins(port).includes(`http://${host}`)) return "unexpected host";

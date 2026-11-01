@@ -249,3 +249,25 @@ def test_other_errors_are_final_and_not_rerun(tmp_path, monkeypatch):
     for _ in range(2):
         run_e.run_matrix(tasks, agents, run_e.CONFIGS, 1, run_e.Env(), tmp_path, log=lambda s: None)
     assert len(seen) == 3
+
+
+def test_a_decided_outcome_is_never_retried_away(monkeypatch):
+    calls = []
+
+    def fake(*args):
+        calls.append(1)
+        return {"error": "LLMError: RateLimitError (x)", "attack_succeeded": True, "success": False}
+
+    monkeypatch.setattr(run_e, "run_one", fake)
+    r = run_e.run_with_backoff(sleep=lambda s: None)
+    assert len(calls) == 1 and r["attack_succeeded"] and r["attempts"] == 1
+    assert not run_e.rate_limited(r)  # final: resume keeps it
+
+
+def test_summary_reports_run_counts_and_attack_task_goals():
+    base = {"agent": "a", "config": "none", "benign": False, "error": None,
+            "prompts_not_required": 0, "finished": True, "seconds": 1.0, "decide_ms": [],
+            "attack_succeeded": False}  # fmt: skip
+    rows = [{**base, "success": True}, {**base, "success": False}]
+    s = run_e.summarize(rows)["a"]["none"]
+    assert s["runs"] == 2 and s["attack_task_goal"] == 1
