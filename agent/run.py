@@ -67,6 +67,7 @@ async def run_agent(
     model: str | None = None,
     max_tool_calls: int = MAX_TOOL_CALLS,
     transcript_path: str | Path | None = None,
+    use_cache: bool = True,
 ) -> AgentRun:
     run = AgentRun()
     async with streamable_http_client(f"{gateway_url.rstrip('/')}/mcp") as (read, write, _):
@@ -79,7 +80,7 @@ async def run_agent(
             ]
             while len(run.tool_calls) < max_tool_calls:
                 reply = await anyio.to_thread.run_sync(
-                    partial(llm.chat, list(run.messages), tools, model=model)
+                    partial(llm.chat, list(run.messages), tools, model=model, use_cache=use_cache)
                 )
                 run.messages.append(_assistant_message(reply))
                 if not reply["tool_calls"]:

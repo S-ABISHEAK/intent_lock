@@ -9,7 +9,14 @@ from pydantic import BaseModel
 
 import intentlock.llm.client as llm_module  # openai is imported only inside the client
 from intentlock.config import Settings
-from intentlock.llm.client import MAX_RETRIES, LLMClient, LLMError
+from intentlock.llm.client import (
+    MAX_RETRIES,
+    RATE_LIMIT_DEFAULT_WAIT_S,
+    RATE_LIMIT_MAX_WAIT_S,
+    RATE_LIMIT_RETRIES,
+    LLMClient,
+    LLMError,
+)
 
 SECRET = "sk-test-SECRET-1234567890"
 
@@ -275,3 +282,78 @@ def test_the_real_sdk_client_does_not_retry_on_its_own_and_has_a_timeout():
 
     c = LLMClient(Settings(model_api_key="k"))
     assert c._client.max_retries == 0 and c._client.timeout == REQUEST_TIMEOUT_S
+
+
+# -- rate limits (Nov 3 Layer E dry run: Groq 429s after a few calls) ---------------------------
+def rate_limited(retry_after="7"):
+    headers = {"retry-after": retry_after} if retry_after is not None else {}
+    req = httpx.Request("POST", "http://x/v1/chat/completions")
+    return llm_module.openai.RateLimitError(
+        "rate limited", response=httpx.Response(429, headers=headers, request=req), body=None
+    )
+
+
+class ChatFake:
+    def __init__(self, script):
+        self.script, self.calls = list(script), 0
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kw):
+        self.calls += 1
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def one_tool_call():
+    msg = SimpleNamespace(content=None, tool_calls=[
+        SimpleNamespace(id="1", function=SimpleNamespace(name="search_products", arguments="{}"))
+    ])  # fmt: skip
+    return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+
+def test_rate_limits_wait_for_retry_after_and_do_not_use_up_normal_retries(tmp_path):
+    waits = []
+    fake = ChatFake(
+        [
+            rate_limited("7"),
+            rate_limited("2"),
+            rate_limited(None),
+            rate_limited("999"),
+            one_tool_call(),
+        ]
+    )
+    c = LLMClient(Settings(llm_cache_dir=str(tmp_path)), client=fake, sleep=waits.append)
+    out = c.chat([{"role": "user", "content": "x"}], [], use_cache=False)
+    assert out["tool_calls"][0]["name"] == "search_products"
+    assert waits == [7.0, 2.0, RATE_LIMIT_DEFAULT_WAIT_S, RATE_LIMIT_MAX_WAIT_S]
+
+
+def test_rate_limits_eventually_give_up(tmp_path):
+    fake = ChatFake([rate_limited("1")] * (RATE_LIMIT_RETRIES + 1))
+    c = LLMClient(Settings(llm_cache_dir=str(tmp_path)), client=fake, sleep=lambda s: None)
+    with pytest.raises(LLMError, match="RateLimitError"):
+        c.chat([{"role": "user", "content": "x"}], [], use_cache=False)
+    assert fake.calls == RATE_LIMIT_RETRIES + 1
+
+
+def test_a_bad_request_records_its_error_code_but_not_the_body(tmp_path):
+    import httpx
+
+    class Bad:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    req = httpx.Request("POST", "http://x")
+                    raise llm_module.openai.BadRequestError(
+                        "boom",
+                        response=httpx.Response(400, request=req),
+                        body={"error": {"code": "tool_use_failed", "failed_generation": "SECRETY"}},
+                    )
+
+    c = LLMClient(Settings(llm_cache_dir=str(tmp_path)), client=Bad(), sleep=lambda s: None)
+    with pytest.raises(LLMError) as e:
+        c.chat([{"role": "user", "content": "hi"}], tools=[], use_cache=False)
+    assert "BadRequestError (tool_use_failed)" in str(e.value) and "SECRETY" not in str(e.value)

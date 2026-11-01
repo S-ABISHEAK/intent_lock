@@ -94,8 +94,13 @@ lint:
 eval-g:
 	$(PY) -m eval.run_g
 
+# SPEC §13.2 live runs. ARGS e.g. "--tasks E-A01,E-B01 --runs 1" or "--resume eval/results/<ts>-e".
 eval-e:
-	@echo "not implemented yet: see SPEC §13.2"; exit 1
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	env -i PATH="$$PATH" HOME="$$HOME" MODEL_API_KEY="$$MODEL_API_KEY" MODEL_BASE_URL="$$MODEL_BASE_URL" \
+	MODEL_ID="$$MODEL_ID" MODEL_ID_EVAL="$$MODEL_ID_EVAL" LLM_CACHE_DIR="$$LLM_CACHE_DIR" \
+	WEAK_MODEL_BASE_URL="$$WEAK_MODEL_BASE_URL" WEAK_MODEL_API_KEY="$$WEAK_MODEL_API_KEY" \
+	WEAK_MODEL_ID="$$WEAK_MODEL_ID" HF_TOKEN="$$HF_TOKEN" $(PY) -m eval.run_e $(ARGS)
 
 report:
 	$(PY) -m eval.report

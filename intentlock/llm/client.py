@@ -24,6 +24,10 @@ from intentlock.config import Settings
 T = TypeVar("T", bound=BaseModel)
 
 MAX_RETRIES = 2
+# 429s (e.g. Groq's free tier) wait for the server's retry-after instead of using up MAX_RETRIES.
+RATE_LIMIT_RETRIES = 6
+RATE_LIMIT_DEFAULT_WAIT_S = 10.0
+RATE_LIMIT_MAX_WAIT_S = 60.0
 REQUEST_TIMEOUT_S = 60.0
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
@@ -68,6 +72,17 @@ class LLMClient:
             default_model=settings.weak_model_id,
             **kwargs,
         )
+
+    def _create(self, **kwargs: Any) -> Any:
+        """One API call, waiting out rate limits (honouring retry-after, capped)."""
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            try:
+                return self._client.chat.completions.create(**kwargs)
+            except openai.RateLimitError as exc:
+                if attempt == RATE_LIMIT_RETRIES:
+                    raise
+                self._sleep(_retry_after(exc))
+        raise AssertionError("unreachable")
 
     # -- cache -------------------------------------------------------------------------------
     def _cache_path(self, model: str, messages: list[dict], schema: dict) -> Path:
@@ -128,12 +143,12 @@ class LLMClient:
     def _call_once(self, model: str, messages: list[dict], schema_cls: type[BaseModel]) -> str:
         kwargs = self._request_kwargs(model, messages, schema_cls)
         try:
-            resp = self._client.chat.completions.create(**kwargs)
+            resp = self._create(**kwargs)
         except openai.BadRequestError as exc:
             if self.mode == "json_schema" and self._rejects_response_format(exc):
                 self.mode = "json_only"
                 kwargs = self._request_kwargs(model, messages, schema_cls)
-                resp = self._client.chat.completions.create(**kwargs)
+                resp = self._create(**kwargs)
             else:
                 raise
         content = resp.choices[0].message.content
@@ -183,8 +198,13 @@ class LLMClient:
                     },
                 ]
             except openai.OpenAIError as exc:  # transport, rate limit, auth, bad request
-                last_error = f"API error: {type(exc).__name__}"
-                if isinstance(exc, openai.AuthenticationError | openai.PermissionDeniedError):
+                last_error = f"API error: {_error_name(exc)}"
+                if isinstance(
+                    exc,
+                    openai.AuthenticationError
+                    | openai.PermissionDeniedError
+                    | openai.RateLimitError,
+                ):
                     break
             else:
                 if use_cache:
@@ -216,9 +236,7 @@ class LLMClient:
         last_error = "unknown error"
         for attempt in range(MAX_RETRIES + 1):
             try:
-                resp = self._client.chat.completions.create(
-                    model=model, messages=messages, tools=tools
-                )
+                resp = self._create(model=model, messages=messages, tools=tools)
                 msg = resp.choices[0].message
                 reply = {
                     "content": msg.content,
@@ -228,9 +246,14 @@ class LLMClient:
                     ],
                 }
             except openai.OpenAIError as exc:
-                last_error = f"API error: {type(exc).__name__}"
-                if isinstance(exc, openai.AuthenticationError | openai.PermissionDeniedError):
-                    break
+                last_error = f"API error: {_error_name(exc)}"
+                if isinstance(
+                    exc,
+                    openai.AuthenticationError
+                    | openai.PermissionDeniedError
+                    | openai.RateLimitError,
+                ):
+                    break  # no point retrying; rate limits were already waited out
             except (AttributeError, IndexError, TypeError) as exc:
                 last_error = f"malformed response: {type(exc).__name__}"
             else:
@@ -241,3 +264,26 @@ class LLMClient:
             if attempt < MAX_RETRIES:
                 self._sleep(0.5 * (attempt + 1))
         raise LLMError(f"LLM chat failed after {MAX_RETRIES + 1} attempts: {last_error}")
+
+
+ERROR_CODE = re.compile(r"[a-z][a-z0-9_]{0,40}")
+
+
+def _error_name(exc: Exception) -> str:
+    """The exception type plus the provider's short error code (e.g. Groq's tool_use_failed);
+    never the message or body, which can echo model output."""
+    code = getattr(exc, "code", None)
+    body = getattr(exc, "body", None)
+    if code is None and isinstance(body, dict):
+        inner = body.get("error", body)
+        code = inner.get("code") if isinstance(inner, dict) else None
+    name = type(exc).__name__
+    return f"{name} ({code})" if isinstance(code, str) and ERROR_CODE.fullmatch(code) else name
+
+
+def _retry_after(exc: Exception) -> float:
+    try:
+        wait = float(exc.response.headers.get("retry-after"))  # type: ignore[attr-defined]
+    except (AttributeError, TypeError, ValueError):
+        return RATE_LIMIT_DEFAULT_WAIT_S
+    return min(max(wait, 0.0), RATE_LIMIT_MAX_WAIT_S)
