@@ -8,11 +8,18 @@ only the user's click in the readback confirms it.
 """
 
 import uuid
+from collections.abc import Collection
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from intentlock.llm.client import LLMClient, LLMError
-from intentlock.mandate.grounding import ADDON_GRANT, ANSWERS_MARK, GroundingReport, ground
+from intentlock.mandate.grounding import (
+    ADDON_GRANT,
+    ANSWERS_MARK,
+    GroundingReport,
+    ground,
+    parse_money_paise,
+)
 from intentlock.models import EpochSeconds, Grant, Mandate, Paise
 
 MANDATE_TTL = 24 * 3600
@@ -205,3 +212,25 @@ def narrow(mandate: dict, field: str) -> dict:
     else:
         raise ValueError(f"not a widening permission: {field}")
     return m
+
+
+def apply_confirmation(
+    mandate: dict, lines: list[dict], accepted: Collection[str], typed_auto_approve: str | None
+) -> tuple[dict, int | None]:
+    """The user's per-permission answers to the readback (D-037): a widening grant stays only if
+    its field is in `accepted`; auto-approve stays only if the typed amount is exactly the limit.
+    Everything else is narrowed away. Returns the mandate and the confirmed auto-approve paise."""
+    confirmed = None
+    for b in lines:
+        field = b.get("field")
+        if b["kind"] != "grant" or not field:
+            continue
+        if field == "auto_approve_under_paise":
+            limit = mandate["auto_approve_under_paise"]
+            if typed_auto_approve and parse_money_paise(typed_auto_approve) == [limit]:
+                confirmed = limit
+                continue
+        elif field in accepted:
+            continue
+        mandate = narrow(mandate, field)
+    return mandate, confirmed

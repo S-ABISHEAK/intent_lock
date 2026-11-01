@@ -2,10 +2,13 @@
 the UI (and, until the UI exists, `python -m intentlock.cli`) uses for sessions, the approval inbox
 and receipts. Every REST route except /health needs `X-Operator-Token`, a secret the agent process
 never gets; an unset token locks them all (D-026). Approval requests are pushed over SSE with the
-UI on Nov 3; today they are polled.
+UI over SSE at /events (receipts after a cursor, and the pending cards); /approvals/pending stays
+for the CLI.
 """
 
+import asyncio
 import hmac
+import json
 import os
 import time
 from collections.abc import AsyncIterator, Callable
@@ -13,6 +16,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from intentlock.approvals.broker import ApprovalBroker
@@ -21,7 +25,12 @@ from intentlock.config import Settings
 from intentlock.connector.shop_connector import ShopConnector
 from intentlock.db import Database
 from intentlock.llm.client import LLMClient
-from intentlock.mandate.compiler import CompileError, compile_mandate, readback
+from intentlock.mandate.compiler import (
+    CompileError,
+    apply_confirmation,
+    compile_mandate,
+    readback,
+)
 from intentlock.mandate.grounding import GroundingReport, ground
 from intentlock.models import Approval, ApprovalRequest, Mandate, Paise
 from intentlock.provenance.ledger import Ledger
@@ -52,6 +61,12 @@ class CompileReq(BaseModel):
     answers: list[Answer] = Field(default=[], max_length=30)
 
 
+class ConfirmReq(BaseModel):
+    mandate: Mandate
+    accepted: list[str] = Field(default=[], max_length=30)  # readback grant fields the user ticked
+    typed_auto_approve: str | None = Field(default=None, max_length=100)
+
+
 def report_json(report: GroundingReport) -> dict:
     return {
         "mandate": report.mandate.model_dump(mode="json"),
@@ -69,6 +84,36 @@ def broker_waiter(broker: ApprovalBroker, clock=time.time):
         return broker.wait(req.approval_id, timeout=req.expires_at - clock())
 
     return wait
+
+
+def pending_cards(gateway: Gateway, broker: ApprovalBroker) -> list[dict]:
+    return [
+        {"request": r.model_dump(), "summary": gateway.summaries.get(r.approval_id)}
+        for r in broker.pending()
+    ]
+
+
+def _sse(event: str, data: object) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+
+async def event_stream(
+    gateway: Gateway, broker: ApprovalBroker, *, after: int = -1, poll_s: float = 0.5
+) -> AsyncIterator[str]:
+    """Receipts with seq > `after` (seq starts at 0), in order, then the pending cards whenever
+    they change."""
+    last, cards = after, None
+    while True:
+        rows = await asyncio.to_thread(gateway.receipts.all)
+        for r in rows:
+            if r.seq > last:
+                last = r.seq
+                yield _sse("receipt", r.model_dump(mode="json"))
+        now = pending_cards(gateway, broker)
+        if now != cards:
+            cards = now
+            yield _sse("pending", now)
+        await asyncio.sleep(poll_s)
 
 
 def create_app(
@@ -148,12 +193,39 @@ def create_app(
         gateway.end_session()
         return {"ok": True}
 
+    @app.post("/mandate/confirm", dependencies=guarded)
+    def confirm_route(req: ConfirmReq) -> dict:
+        """The readback answers applied on the server (D-037), so the UI never parses money or
+        narrows a mandate itself. Only ever narrows; POST /session still re-checks everything."""
+        if len(req.mandate.user_text) > MAX_MANDATE_TEXT_CHARS:
+            raise HTTPException(422, "the request text is too long")
+        report = ground(req.mandate)
+        if report.mandate != req.mandate or report.clarifications:
+            raise HTTPException(422, {"error": "mandate is not grounded", **report_json(report)})
+        mandate, typed = apply_confirmation(
+            req.mandate.model_dump(mode="json"),
+            readback(report),
+            set(req.accepted),
+            req.typed_auto_approve,
+        )
+        confirmed = Mandate.model_validate({**mandate, "user_confirmed": True})
+        return {
+            "mandate": confirmed.model_dump(mode="json"),
+            "confirm_auto_approve_paise": typed,
+            "readback": readback(ground(confirmed)),
+        }
+
     @app.get("/approvals/pending", dependencies=guarded)
     def pending() -> list[dict]:
-        return [
-            {"request": r.model_dump(), "summary": gateway.summaries.get(r.approval_id)}
-            for r in broker.pending()
-        ]
+        return pending_cards(gateway, broker)
+
+    @app.get("/events", dependencies=guarded)
+    def events(after: int = -1) -> StreamingResponse:
+        return StreamingResponse(
+            event_stream(gateway, broker, after=after),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/approvals/{approval_id}/signature", dependencies=guarded)
     def submit(approval_id: str, approval: Approval) -> dict:

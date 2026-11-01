@@ -48,3 +48,14 @@ def test_the_newest_folder_per_agent_is_used(tmp_path):
     assert {r["agent"] for r in picked} == {"muse", "weak"}
     assert [r["success"] for r in picked if r["agent"] == "muse"] == [True]
     assert report.e_sources(tmp_path) == {"muse": new.name, "weak": old.name}
+
+
+def test_results_json_carries_both_layers_and_their_sources(tmp_path):
+    write(tmp_path, "20260102-000000-e", [row("muse", "none", True, success=True)])
+    g = tmp_path / "20260102-000000-g"
+    g.mkdir()
+    (g / "summary.json").write_text(json.dumps({"configs": {}}))
+    out = report.results_json(tmp_path)
+    assert out["layer_g"] == {"source": g.name, "summary": {"configs": {}}}
+    assert out["layer_e"]["sources"] == {"muse": "20260102-000000-e"}
+    assert out["layer_e"]["summary"]["muse"]["none"]["benign_completed"] == 1

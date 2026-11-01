@@ -165,11 +165,15 @@ def test_agent_never_knows_the_operator_token():
 def test_make_dev_uses_an_allow_list_per_process():
     makefile = (ROOT / "Makefile").read_text()
     dev = makefile.split("\ndev:")[1].split("\n\n")[0]
-    assert dev.count("env -i") == 3
+    assert dev.count("env -i") == 4  # shop, approver, gateway, UI (SPEC §3)
     approver_line = [part for part in dev.split("env -i") if "approver.app" in part][0]
     assert "SHOP_API_KEY" not in approver_line and "MODEL_API_KEY" not in approver_line
     gateway_line = [part for part in dev.split("env -i") if "intentlock.api" in part][0]
     assert "APPROVER_KEY_PATH" not in gateway_line and "APPROVER_UI_TOKEN" not in gateway_line
+    # D-042: the UI dev server holds the two tokens it injects and nothing else
+    ui_line = [part for part in dev.split("env -i") if "npm --prefix ui" in part][0]
+    passed = set(re.findall(r'([A-Z_]+)="\$\$', ui_line))
+    assert passed == {"PATH", "HOME", "GATEWAY_OPERATOR_TOKEN", "APPROVER_UI_TOKEN"}
 
 
 def test_make_agent_never_hands_the_agent_shop_or_operator_secrets():

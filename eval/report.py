@@ -151,6 +151,25 @@ def latest(layer: str = "g", results_dir: Path = RESULTS_DIR) -> Path | None:
     return runs[-1] if runs else None
 
 
+UI_RESULTS = Path(__file__).resolve().parent.parent / "ui" / "public" / "results.json"
+
+
+def results_json(results_dir: Path = RESULTS_DIR) -> dict:
+    """What the UI's results page shows: the newest Layer G summary and the Layer E summary."""
+    from eval.run_e import summarize
+
+    g = latest("g", results_dir)
+    return {
+        "layer_g": {"source": g.name, "summary": json.loads((g / "summary.json").read_text())}
+        if g
+        else None,
+        "layer_e": {
+            "sources": e_sources(results_dir),
+            "summary": summarize(latest_e_rows(results_dir)),
+        },
+    }
+
+
 def main() -> int:
     run = latest("g")
     if run is None:
@@ -162,6 +181,9 @@ def main() -> int:
     if sources:
         print("\n" + ", ".join(f"{a}: {d}" for a, d in sources.items()) + "\n")
         print(layer_e_table(latest_e_rows()))
+    if UI_RESULTS.parent.is_dir():
+        UI_RESULTS.write_text(json.dumps(results_json(), indent=1) + "\n")
+        print(f"\n-> {UI_RESULTS}")
     return 0
 
 

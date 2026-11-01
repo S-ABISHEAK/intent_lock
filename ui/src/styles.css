@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+@theme {
+  --color-allow: #15803d;
+  --color-review: #b45309;
+  --color-deny: #b91c1c;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+}
+
+mark {
+  @apply rounded bg-amber-200 px-0.5 text-slate-900;
+}
+
+@layer components {
+  .btn {
+    @apply rounded bg-slate-900 px-4 py-1.5 font-medium text-white disabled:opacity-40;
+  }
+  .btn-quiet {
+    @apply rounded border border-slate-300 bg-white px-3 py-1;
+  }
+  .tab {
+    @apply rounded px-3 py-1 text-slate-600 hover:bg-slate-200;
+  }
+  .tab-on {
+    @apply bg-slate-900 text-white hover:bg-slate-900;
+  }
+  table.results {
+    @apply w-full border-collapse overflow-hidden rounded bg-white text-sm shadow-sm;
+  }
+  table.results th,
+  table.results td {
+    @apply border-b border-slate-200 px-3 py-2 text-left;
+  }
+  table.results th {
+    @apply bg-slate-100 font-medium;
+  }
+}

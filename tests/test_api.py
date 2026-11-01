@@ -61,6 +61,8 @@ OPERATOR_ROUTES = [
     ("post", "/approvals/x/reject"),
     ("get", "/receipts"),
     ("get", "/receipts/verify"),
+    ("post", "/mandate/confirm"),
+    ("get", "/events"),
 ]
 
 
@@ -215,3 +217,82 @@ def test_compile_without_a_model_or_on_failure_gives_no_mandate(env):
 
     c = client_for(env, compiler=broken)
     assert c.post("/mandate/compile", headers=H, json={"user_text": "x"}).status_code == 502
+
+
+# -- Nov 3 UI: per-permission confirmation on the server (D-037), SSE timeline (SPEC §3) ----------
+def confirm(env, mandate=MANDATE, **body):
+    return client_for(env).post("/mandate/confirm", headers=H, json={"mandate": mandate, **body})
+
+
+def test_confirming_every_permission_with_the_typed_amount_starts_a_session(env):
+    r = confirm(env, accepted=["allowed_actions:checkout"], typed_auto_approve="₹2,000")
+    body = r.json()
+    assert r.status_code == 200 and body["mandate"]["user_confirmed"] is True
+    assert body["confirm_auto_approve_paise"] == 200_000
+    assert {k: v for k, v in body["mandate"].items() if k != "user_confirmed"} == {
+        k: v for k, v in MANDATE.items() if k != "user_confirmed"
+    }
+    session = {"mandate": body["mandate"], "confirm_auto_approve_paise": 200_000}
+    assert client_for(env).post("/session", headers=H, json=session).status_code == 200
+
+
+def test_a_permission_not_ticked_is_removed(env):
+    body = confirm(env, accepted=[], typed_auto_approve="2000").json()
+    assert "checkout" not in body["mandate"]["allowed_actions"]
+    assert body["mandate"]["auto_approve_under_paise"] == 200_000
+
+
+@pytest.mark.parametrize("typed", [None, "", "5000", "₹2,000 or ₹5,000", "two"])
+def test_a_wrong_or_missing_typed_amount_drops_auto_approve(env, typed):
+    body = confirm(env, accepted=["allowed_actions:checkout", "auto_approve_under_paise"],
+                   typed_auto_approve=typed).json()  # fmt: skip
+    assert body["mandate"]["auto_approve_under_paise"] == 0
+    assert body["confirm_auto_approve_paise"] is None
+
+
+def test_confirm_never_widens_and_refuses_an_ungrounded_mandate(env):
+    widened = {**MANDATE, "allow_recurring": True}
+    r = confirm(env, mandate=widened, accepted=["allow_recurring"], typed_auto_approve="2000")
+    assert r.status_code == 422
+    body = confirm(env, accepted=["allowed_actions:send_email", "allow_recurring"]).json()
+    assert body["mandate"]["allow_recurring"] is False
+    assert "send_email" not in body["mandate"]["allowed_actions"]
+
+
+def test_confirm_refuses_open_questions(env):
+    from intentlock.mandate.grounding import ground
+    from intentlock.models import Mandate
+
+    two = {**MANDATE, "user_text": MANDATE["user_text"] + " Budget ₹50,000."}
+    assert ground(Mandate.model_validate(two)).clarifications
+    assert confirm(env, mandate=two, accepted=[]).status_code == 422
+
+
+def test_the_event_stream_sends_receipts_after_a_cursor_and_pending_cards(env):
+    import asyncio
+
+    from intentlock.api import event_stream
+
+    gw, broker, _ = env
+    gw.start_session(grounded_mandate())
+    gw.receipts.append("error", {"note": "x"})
+    seqs = [r.seq for r in gw.receipts.all()]
+
+    async def first(n, after):
+        out, gen = [], event_stream(gw, broker, after=after, poll_s=0.01)
+        async for chunk in gen:
+            out.append(chunk)
+            if len(out) == n:
+                break
+        await gen.aclose()
+        return out
+
+    chunks = asyncio.run(first(len(seqs) + 1, after=-1))
+    receipts = [
+        json.loads(c.split("data: ", 1)[1]) for c in chunks if c.startswith("event: receipt")
+    ]
+    assert [r["seq"] for r in receipts] == seqs
+    assert any(c.startswith("event: pending\ndata: []") for c in chunks)
+    later = asyncio.run(first(1, after=seqs[-2]))
+    assert json.loads(later[0].split("data: ", 1)[1])["seq"] == seqs[-1]
+    assert all(c.endswith("\n\n") for c in chunks)

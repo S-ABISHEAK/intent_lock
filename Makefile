@@ -1,10 +1,11 @@
 PY := .venv/bin/python
 
-.PHONY: weak-smoke two-channel-check setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset smoke
+.PHONY: test-ui weak-smoke two-channel-check setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset smoke
 
 setup:
 	uv venv --python 3.11 .venv
 	uv pip install --python $(PY) -e ".[dev]"
+	npm --prefix ui install --no-fund --no-audit
 
 keys:
 	$(PY) -m approver.keys keys
@@ -53,6 +54,8 @@ dev:
 	  MODEL_BASE_URL="$$MODEL_BASE_URL" MODEL_ID="$$MODEL_ID" LLM_CACHE_DIR="$$LLM_CACHE_DIR" \
 	  HF_TOKEN="$$HF_TOKEN" \
 	  $(PY) -m uvicorn --factory intentlock.api:build_from_env --port 8000 & \
+	env -i PATH="$$PATH" HOME="$$HOME" GATEWAY_OPERATOR_TOKEN="$$GATEWAY_OPERATOR_TOKEN" \
+	  APPROVER_UI_TOKEN="$$APPROVER_UI_TOKEN" npm --prefix ui run dev & \
 	wait
 
 # Operator commands: always the project venv, each with only the variables it needs.
@@ -86,6 +89,10 @@ agent:
 
 test:
 	$(PY) -m pytest -q
+
+# UI: the dev-server guard, and a build that must not contain either token (D-042).
+test-ui:
+	npm --prefix ui test
 
 lint:
 	$(PY) -m ruff check .

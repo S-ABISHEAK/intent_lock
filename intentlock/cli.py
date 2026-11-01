@@ -29,7 +29,7 @@ import httpx
 
 from intentlock.config import Settings
 from intentlock.connector.shop_connector import ShopConnector
-from intentlock.mandate.compiler import narrow
+from intentlock.mandate.compiler import apply_confirmation
 from intentlock.mandate.grounding import parse_money_paise
 
 COMPILE_TIMEOUT_S = 400.0  # a Muse structured-output call (with retries) can take a while
@@ -230,22 +230,18 @@ def compile_text(
 def confirm_permissions(mandate: dict, lines: list[dict[str, Any]]) -> tuple[dict, int | None]:
     """Each widening permission is accepted on its own (D-037); declined ones are removed. Skipping
     approval needs the amount typed back. Returns the narrowed mandate and the typed paise."""
-    typed = None
+    accepted, typed = set(), None
     for b in lines:
         if b["kind"] != "grant" or not b.get("field"):
             continue
         what = safe_text(b["text"])
         if b["field"] == "auto_approve_under_paise":
-            limit = mandate["auto_approve_under_paise"]
-            answer = input(f"\n{what}.\nType the amount to allow this, or Enter to refuse: ")
-            if parse_money_paise(answer) == [limit]:
-                typed = limit
-                continue
-            print("not allowed: every purchase will need your approval")
+            typed = input(f"\n{what}.\nType the amount to allow this, or Enter to refuse: ")
+            if parse_money_paise(typed) != [mandate["auto_approve_under_paise"]]:
+                print("not allowed: every purchase will need your approval")
         elif input(f"\nAllow: {what}? [y/N] ").strip().lower() == "y":
-            continue
-        mandate = narrow(mandate, b["field"])
-    return mandate, typed
+            accepted.add(b["field"])
+    return apply_confirmation(mandate, lines, accepted, typed)
 
 
 def run_mandate(s: Settings, c: httpx.Client, text: str) -> int:
