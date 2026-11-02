@@ -210,3 +210,30 @@ def test_execution_results_are_scored_too(tmp_path):
     )
     exec_records = [r for r in gw.ledger.records(gw.session.session_id) if r.tool == "checkout"]
     assert exec_records and any(r.pg_score_permille is not None for r in exec_records)
+
+
+def test_default_loader_uses_the_stock_model_unless_prompt_guard_model_is_set(monkeypatch):
+    """D-046: PROMPT_GUARD_MODEL picks the weights (e.g. fine-tuned ones); nothing else changes."""
+    from intentlock.verify import promptguard
+
+    calls = []
+    monkeypatch.setattr(
+        promptguard,
+        "load_hf_scorer",
+        lambda token=None, model=None: calls.append(model) or fake_scorer,
+    )
+    monkeypatch.delenv("PROMPT_GUARD_MODEL", raising=False)
+    assert resolve_promptguard(frozenset({9}))[2] == "on"
+    monkeypatch.setenv("PROMPT_GUARD_MODEL", "/home/someone/secret-dir/.cache/pg-finetuned")
+    features, scorer, status = resolve_promptguard(frozenset({9}))
+    assert calls == [promptguard.MODEL_ID, "/home/someone/secret-dir/.cache/pg-finetuned"]
+    assert features == frozenset({9}) and scorer is fake_scorer
+    assert status == "on:pg-finetuned"  # the folder name only: no home path in receipts or the UI
+
+
+def test_a_custom_model_that_fails_to_load_turns_the_step_off(monkeypatch):
+    from intentlock.verify import promptguard
+
+    monkeypatch.setattr(promptguard, "load_hf_scorer", lambda token=None, model=None: None)
+    monkeypatch.setenv("PROMPT_GUARD_MODEL", "/nowhere/pg-finetuned")
+    assert resolve_promptguard(frozenset({8, 9})) == (frozenset({8}), None, "unavailable")

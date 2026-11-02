@@ -206,8 +206,16 @@ def test_no_invisible_or_bidi_characters_in_source():
 def test_demo_tamper_uses_an_allow_list():
     makefile = (ROOT / "Makefile").read_text()
     recipe = makefile.split("\ndemo-tamper:")[1].split("\n\n")[0]
-    assert "$(CLI_ENV)" in recipe and "set -a; [ -f .env ]" in recipe
-    assert "MODEL_API_KEY" not in recipe and "APPROVER_KEY" not in recipe
+    passed = set(re.findall(r'([A-Z_]+)="\$\$', recipe))
+    # review LOW-3: only the shop key, no operator or UI token
+    assert "env -i" in recipe and passed == {"PATH", "HOME", "SHOP_URL", "SHOP_API_KEY"}
+
+
+def test_make_variables_are_never_interpolated_into_shell_text():
+    """Review LOW-2: `make demo-tamper SKU='x"; cmd; "'` must not run cmd."""
+    makefile = (ROOT / "Makefile").read_text()
+    for var in ("TEXT", "TASK", "SCRIPT", "SKU", "ATTACKS", "MANDATE"):
+        assert f"$({var})" not in makefile and f"export {var} ?=" in makefile
 
 
 def test_hijacked_agent_gets_only_the_gateway_url():
@@ -216,3 +224,17 @@ def test_hijacked_agent_gets_only_the_gateway_url():
     assert "env -i" in recipe
     passed = set(re.findall(r'([A-Z_]+)="\$\$', recipe))
     assert passed == {"PATH", "HOME", "GATEWAY_URL"}
+
+
+def test_make_setup_keeps_an_existing_venv():
+    """Nov 4: `uv venv` replaces .venv, which silently dropped the promptguard/browser extras."""
+    makefile = (ROOT / "Makefile").read_text()
+    recipe = makefile.split("\nsetup:")[1].split("\n\n")[0]
+    venv_line = [ln for ln in recipe.splitlines() if "uv venv" in ln][0]
+    assert venv_line.strip().startswith("[ -x $(PY) ] ||")
+
+
+def test_prompt_guard_training_gets_only_the_hf_token():
+    makefile = (ROOT / "Makefile").read_text()
+    recipe = makefile.split("\npg-train pg-eval:")[1].split("\n\n")[0]
+    assert set(re.findall(r'([A-Z_]+)="\$\$', recipe)) == {"PATH", "HOME", "HF_TOKEN"}

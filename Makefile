@@ -1,9 +1,9 @@
 PY := .venv/bin/python
 
-.PHONY: test-ui weak-smoke two-channel-check setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset demo-tamper agent-hijacked smoke
+.PHONY: test-ui weak-smoke two-channel-check setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset demo-tamper agent-hijacked pg-notebook pg-data pg-train pg-eval smoke
 
 setup:
-	uv venv --python 3.11 .venv
+	[ -x $(PY) ] || uv venv --python 3.11 .venv   # never replace it: that drops installed extras
 	uv pip install --python $(PY) -e ".[dev]"
 	npm --prefix ui install --no-fund --no-audit
 
@@ -50,7 +50,7 @@ dev:
 	env -i PATH="$$PATH" HOME="$$HOME" SHOP_API_KEY="$$SHOP_API_KEY" SHOP_URL="$$SHOP_URL" \
 	  CONFIG="$$CONFIG" GATEWAY_OPERATOR_TOKEN="$$GATEWAY_OPERATOR_TOKEN" \
 	  APPROVER_PUBLIC_KEY_PATH="$$APPROVER_PUBLIC_KEY_PATH" GATEWAY_DB_DIR="$$GATEWAY_DB_DIR" \
-	  TWO_CHANNEL="$$TWO_CHANNEL" PROMPT_GUARD="$$PROMPT_GUARD" MODEL_API_KEY="$$MODEL_API_KEY" \
+	  TWO_CHANNEL="$$TWO_CHANNEL" PROMPT_GUARD="$$PROMPT_GUARD" PROMPT_GUARD_MODEL="$$PROMPT_GUARD_MODEL" MODEL_API_KEY="$$MODEL_API_KEY" \
 	  MODEL_BASE_URL="$$MODEL_BASE_URL" MODEL_ID="$$MODEL_ID" LLM_CACHE_DIR="$$LLM_CACHE_DIR" \
 	  HF_TOKEN="$$HF_TOKEN" \
 	  $(PY) -m uvicorn --factory intentlock.api:build_from_env --port 8000 & \
@@ -58,18 +58,21 @@ dev:
 	  APPROVER_UI_TOKEN="$$APPROVER_UI_TOKEN" npm --prefix ui run dev & \
 	wait
 
+# Variables typed on the make command line (TEXT, TASK, SCRIPT, SKU, ATTACKS, MANDATE) are exported and
+# read as "$$VAR" in recipes, so a quote in them can't break out into the shell (review LOW-2).
 # Operator commands: always the project venv, each with only the variables it needs.
 CLI_ENV = env -i PATH="$$PATH" HOME="$$HOME" GATEWAY_URL="$$GATEWAY_URL" APPROVER_URL="$$APPROVER_URL" \
 	GATEWAY_OPERATOR_TOKEN="$$GATEWAY_OPERATOR_TOKEN" APPROVER_UI_TOKEN="$$APPROVER_UI_TOKEN"
 
 # MANDATE=eval/tasks/demo_mandate_taint.json starts the session the demo's taint beat needs (D-044).
-MANDATE ?=
+export MANDATE ?=
 session:
-	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli session $(if $(MANDATE),"$(MANDATE)")
+	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli session $${MANDATE:+"$$MANDATE"}
 
 # Muse drafts a mandate from your words; you read it back and confirm (SPEC §9).
+export TEXT ?=
 mandate:
-	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli mandate "$(TEXT)"
+	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli mandate "$$TEXT"
 
 # The user's side of an approval: shows each card and asks y/N.
 approve:
@@ -80,21 +83,35 @@ timeline:
 	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli timeline
 
 # The agent gets the gateway URL and model settings only, never shop or operator secrets.
-TASK ?= Buy a wireless mouse under ₹2,000
+export TASK ?= Buy a wireless mouse under ₹2,000
 agent:
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	env -i PATH="$$PATH" HOME="$$HOME" GATEWAY_URL="$$GATEWAY_URL" MODEL_API_KEY="$$MODEL_API_KEY" \
 	  MODEL_BASE_URL="$$MODEL_BASE_URL" MODEL_ID="$$MODEL_ID" MODEL_ID_EVAL="$$MODEL_ID_EVAL" \
 	  LLM_CACHE_DIR="$$LLM_CACHE_DIR" WEAK_MODEL_BASE_URL="$$WEAK_MODEL_BASE_URL" \
 	  WEAK_MODEL_API_KEY="$$WEAK_MODEL_API_KEY" WEAK_MODEL_ID="$$WEAK_MODEL_ID" \
-	  $(PY) -m agent.run --task "$(TASK)"
+	  $(PY) -m agent.run --task "$$TASK"
 
 # SPEC §18 beats 3-4: a simulated hijacked agent (fixed script, no model; D-044) runs the P1 or P3
 # attack through the gateway (SCRIPT=P1|P3|P4). It gets only the gateway URL. Say "simulated" on screen.
-SCRIPT ?= P1
+export SCRIPT ?= P1
 agent-hijacked:
 	@set -a; [ -f .env ] && . ./.env; set +a; \
-	env -i PATH="$$PATH" HOME="$$HOME" GATEWAY_URL="$$GATEWAY_URL" $(PY) -m agent.hijacked --script "$(SCRIPT)"
+	env -i PATH="$$PATH" HOME="$$HOME" GATEWAY_URL="$$GATEWAY_URL" $(PY) -m agent.hijacked --script "$$SCRIPT"
+
+# SPEC §1 stretch #13 (D-046): Prompt Guard 2 fine-tuned on commerce injections.
+# Train on a GPU: upload eval/pg/pg_finetune_kaggle.ipynb to Kaggle (see its first cell);
+# `make pg-notebook` regenerates it. pg-train/pg-eval run the same code locally and need a GPU
+# machine in practice. pg-data builds and hash-locks the data once (already done; locked).
+pg-notebook:
+	$(PY) -m eval.pg.notebook
+
+pg-data:
+	$(PY) -m eval.pg.build --write && $(PY) -m eval.pg.finetune lock
+
+pg-train pg-eval:
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	env -i PATH="$$PATH" HOME="$$HOME" HF_TOKEN="$$HF_TOKEN" $(PY) -m eval.pg.finetune $(@:pg-%=%)
 
 test:
 	$(PY) -m pytest -q
@@ -124,19 +141,19 @@ report:
 
 # Empty the shop and start a fresh gateway session with the demo mandate (services must be up).
 # `make demo-reset ATTACKS=P1,P6` loads SPEC §14.3 attack fixtures for a live attack demo.
-ATTACKS ?=
+export ATTACKS ?=
 demo-reset:
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	$(CLI_ENV) SHOP_URL="$$SHOP_URL" SHOP_API_KEY="$$SHOP_API_KEY" \
-	  $(PY) -m intentlock.cli reset --attacks "$(ATTACKS)"
+	  $(PY) -m intentlock.cli reset --attacks "$$ATTACKS"
 
 # SPEC §18 beat 6: while an approval card is open, slip an item into the cart (default: the P3
 # Express Care add-on). Approving then ends in QUOTE_CHANGED.
-SKU ?= XC-4999
+export SKU ?= XC-4999
 demo-tamper:
 	@set -a; [ -f .env ] && . ./.env; set +a; \
-	$(CLI_ENV) SHOP_URL="$$SHOP_URL" SHOP_API_KEY="$$SHOP_API_KEY" \
-	  $(PY) -m intentlock.cli tamper --add "$(SKU)"
+	env -i PATH="$$PATH" HOME="$$HOME" SHOP_URL="$$SHOP_URL" SHOP_API_KEY="$$SHOP_API_KEY" \
+	  $(PY) -m intentlock.cli tamper --add "$$SKU"
 
 # One muse-spark structured-output call. Sources .env in this shell only and passes just the MODEL_*
 # variables on, so SHOP_API_KEY never reaches the process. The file is never printed.

@@ -212,6 +212,8 @@ def reset_demo(
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 409 or time.monotonic() > deadline:
                 raise
+            # a commit that was still deciding may have opened its card after the first sweep
+            client.post(f"{gateway_url}/session/end", headers=op).raise_for_status()
             time.sleep(0.2)
 
 
@@ -320,7 +322,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not value
     ]
-    if missing:
+    args = sys.argv[1:] if argv is None else argv
+    if missing and args[:1] != ["tamper"]:  # tamper talks only to the shop (review LOW-3)
         print(f"not set in .env: {', '.join(missing)} (then restart `make dev`)")
         return 2
     try:

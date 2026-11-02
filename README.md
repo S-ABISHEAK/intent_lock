@@ -29,7 +29,7 @@ flowchart LR
 | Process | Port | Holds |
 |---|---|---|
 | shop | 8001 | Catalogue, carts, quotes, orders, checkout pages |
-| gateway | 8000 | MCP proxy, pipeline, ledger, receipts, connector. The only process with the shop API key. |
+| gateway | 8000 | MCP proxy, pipeline, ledger, receipts, connector. The only agent-facing process with the shop API key (the shop checks it; the operator's `make demo-reset` / `make demo-tamper` also use it). |
 | approver | 8002 | The Ed25519 private key. Signs only when the UI posts a user click. |
 | ui | 5173 | Mandate readback, live timeline, approval cards, results. Its dev server injects the gateway/approver tokens; the browser bundle never contains them. |
 | agent | CLI | Knows only the gateway's MCP endpoint |

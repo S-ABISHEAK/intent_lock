@@ -83,3 +83,14 @@ def test_tamper_while_the_card_is_open_is_quote_changed(world):  # noqa: F811
     )
     assert s.checkout == {"status": "denied", "reasons": ["QUOTE_CHANGED"]}
     assert world.store.orders == [] and kinds(s.receipts)[-1] == "execution"
+
+
+def test_cli_tamper_needs_only_the_shop_key(monkeypatch, capsys, shop):
+    """Checkpoint review LOW-3: the tamper process gets no operator or UI token."""
+    monkeypatch.delenv("GATEWAY_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("APPROVER_UI_TOKEN", raising=False)
+    monkeypatch.setattr(
+        cli, "ShopConnector", lambda url: ShopConnector(BASE, api_key=KEY, client=shop)
+    )
+    assert cli.main(["tamper", "--add", "XC-4999"]) == 0
+    assert "XC-4999" in capsys.readouterr().out

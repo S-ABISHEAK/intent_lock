@@ -10,6 +10,7 @@ can't be loaded the feature is switched off with a recorded warning; a missing m
 import logging
 import os
 from collections.abc import Callable, Iterable
+from pathlib import Path
 
 from intentlock.models import ProvenanceRecord, Reason
 from intentlock.policy.reasons import make_reason
@@ -26,8 +27,9 @@ Scorer = Callable[[str], int]
 last_load_error: str | None = None  # why the model didn't load (token redacted), for diagnostics
 
 
-def load_hf_scorer(token: str | None = None) -> Scorer | None:
-    """The real model on CPU via transformers, or None if it isn't installed or access is gated."""
+def load_hf_scorer(token: str | None = None, model: str | None = None) -> Scorer | None:
+    """The real model on CPU via transformers, or None if it isn't installed or access is gated.
+    `model` is a hub id or a local folder (the fine-tuned weights, D-046); default: stock."""
     global last_load_error
     try:
         from transformers import pipeline  # optional extra: .[promptguard]
@@ -35,7 +37,7 @@ def load_hf_scorer(token: str | None = None) -> Scorer | None:
         last_load_error = f"transformers not installed ({exc})"
         return None
     try:
-        clf = pipeline("text-classification", model=MODEL_ID, token=token or None)
+        clf = pipeline("text-classification", model=model or MODEL_ID, token=token or None)
     except Exception as exc:  # gated, offline, wrong token: the feature stays off, it never ALLOWs
         message = f"{type(exc).__name__}: {exc}"
         if token:
@@ -62,12 +64,14 @@ def resolve_promptguard(
     """(features, scorer, status). Status is recorded per session so results say what ran."""
     if 9 not in features:
         return features, None, "off"
-    load = loader or (lambda: load_hf_scorer(os.environ.get("HF_TOKEN")))
+    custom = os.environ.get("PROMPT_GUARD_MODEL") or None  # D-046: e.g. .cache/pg-finetuned
+    load = loader or (lambda: load_hf_scorer(os.environ.get("HF_TOKEN"), model=custom or MODEL_ID))
     scorer = load()
     if scorer is None:
         log.warning("PROMPT_GUARD is on but the model is unavailable; running without step 9")
         return features - {9}, None, "unavailable"
-    return features, scorer, "on"
+    # receipts name the weights that ran, by folder name only (no home paths in receipts or UI)
+    return features, scorer, f"on:{Path(custom).name}" if custom else "on"
 
 
 def score_records(records: Iterable[ProvenanceRecord], scorer: Scorer) -> list[ProvenanceRecord]:
