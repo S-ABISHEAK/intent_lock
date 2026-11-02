@@ -32,6 +32,7 @@ from intentlock.mandate.compiler import (
     readback,
 )
 from intentlock.mandate.grounding import GroundingReport, ground
+from intentlock.mcp_logs import quiet_closed_sse_writer
 from intentlock.models import Approval, ApprovalRequest, Mandate, Paise
 from intentlock.provenance.ledger import Ledger
 from intentlock.proxy.mcp_proxy import Gateway, GatewayBusy, build_gateway_mcp
@@ -123,6 +124,7 @@ def create_app(
     operator_token: str,
     compiler: Callable[..., GroundingReport] | None = None,
 ) -> FastAPI:
+    quiet_closed_sse_writer()
     mcp = build_gateway_mcp(gateway)
     mcp_app = mcp.streamable_http_app()
 

@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from intentlock.mcp_logs import quiet_closed_sse_writer
 from shop.mcp_server import build_mcp
 from shop.pages import render
 from shop.store import ShopError, Store
@@ -77,6 +78,7 @@ class EmailReq(BaseModel):
 
 
 def create_app(store: Store, api_key: str) -> FastAPI:
+    quiet_closed_sse_writer()
     mcp = build_mcp(store)
     mcp_app = mcp.streamable_http_app()  # creates mcp.session_manager
 

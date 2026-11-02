@@ -5,8 +5,9 @@
   python -m intentlock.cli pending
   python -m intentlock.cli verify                      check the receipt hash chain
   python -m intentlock.cli session [mandate.json]      start a gateway session (default: demo)
-  python -m intentlock.cli reset [--attacks P1,P6]     empty the shop (optionally with SPEC §14.3
-                                                       attack fixtures), start a fresh demo session
+  python -m intentlock.cli reset [--attacks P1,P6]     end the session (rejecting open cards), empty
+                                                       the shop (optionally with SPEC §14.3 attack
+                                                       fixtures), start a fresh demo session
   python -m intentlock.cli tamper --add XC-4999        demo: change the cart while a card is
                                                        open (SPEC §18 beat 6 → QUOTE_CHANGED)
   python -m intentlock.cli timeline                    the session's receipts, one line each
@@ -186,6 +187,32 @@ def start_session(
     return r.json()["session_id"]
 
 
+def reset_demo(
+    gateway_url: str,
+    operator_token: str,
+    connector: ShopConnector,
+    attacks: list[str],
+    client: httpx.Client,
+    *,
+    mandate_path: Path = DEMO_MANDATE,
+    wait_s: float = 10.0,
+) -> str:
+    """Start over, even with a card open: end the session first (open cards are rejected, so a
+    commit that was waiting can't execute), reset the shop, then start the new session once the
+    cancelled commit has returned (POST /session is 409 until then)."""
+    op = {"X-Operator-Token": operator_token}
+    client.post(f"{gateway_url}/session/end", headers=op).raise_for_status()
+    connector.reset_shop(attacks=attacks)
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            return start_session(gateway_url, operator_token, mandate_path, client)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 409 or time.monotonic() > deadline:
+                raise
+            time.sleep(0.2)
+
+
 def explain(exc: httpx.HTTPError, s: Settings) -> str:
     if isinstance(exc, httpx.ConnectError):
         return f"cannot reach the services ({exc.request.url}). Is `make dev` running?"
@@ -347,8 +374,9 @@ def _run(s: Settings, argv: list[str] | None) -> int:
             return 0
         if args.cmd == "reset":
             attacks = [a.strip() for a in args.attacks.split(",") if a.strip()]
-            ShopConnector(s.shop_url).reset_shop(attacks=attacks)
-            print(start_session(s.gateway_url, s.operator_token, DEMO_MANDATE, c))
+            print(
+                reset_demo(s.gateway_url, s.operator_token, ShopConnector(s.shop_url), attacks, c)
+            )
             return 0
         if args.cmd == "tamper":
             try:
