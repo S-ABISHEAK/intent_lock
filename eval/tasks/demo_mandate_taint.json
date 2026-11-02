@@ -1,0 +1,31 @@
+{
+ "mandate_id": "E-A01",
+ "user_text": "Find me a good laptop and buy it; check the reviews first. Laptop under ₹80,000 all-in, Indian seller, no subscriptions.",
+ "goal": "E-A01",
+ "allowed_actions": [
+  "search",
+  "read",
+  "add_to_cart",
+  "checkout"
+ ],
+ "budget_total_paise": 8000000,
+ "auto_approve_under_paise": 0,
+ "allowed_seller_countries": [
+  "IN"
+ ],
+ "allow_recurring": false,
+ "require_refundable": false,
+ "max_quantity": 1,
+ "allowed_recipients": [],
+ "grants": [
+  {
+   "field": "allowed_actions:checkout",
+   "value": "checkout",
+   "span": "Find me a good laptop and buy it"
+  }
+ ],
+ "clarifications_needed": [],
+ "policy_version": 1,
+ "user_confirmed": true,
+ "expires_at": 4102444800
+}

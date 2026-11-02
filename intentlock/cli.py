@@ -7,6 +7,8 @@
   python -m intentlock.cli session [mandate.json]      start a gateway session (default: demo)
   python -m intentlock.cli reset [--attacks P1,P6]     empty the shop (optionally with SPEC §14.3
                                                        attack fixtures), start a fresh demo session
+  python -m intentlock.cli tamper --add XC-4999        demo: change the cart while a card is
+                                                       open (SPEC §18 beat 6 → QUOTE_CHANGED)
   python -m intentlock.cli timeline                    the session's receipts, one line each
   python -m intentlock.cli mandate "<request>"         Muse drafts a mandate; read it back, y/N
 
@@ -28,7 +30,7 @@ from typing import Any
 import httpx
 
 from intentlock.config import Settings
-from intentlock.connector.shop_connector import ShopConnector
+from intentlock.connector.shop_connector import ConnectorError, ShopConnector
 from intentlock.mandate.compiler import apply_confirmation
 from intentlock.mandate.grounding import parse_money_paise
 
@@ -314,6 +316,8 @@ def _run(s: Settings, argv: list[str] | None) -> int:
     se.add_argument("mandate", nargs="?", default=str(DEMO_MANDATE))
     rs = sub.add_parser("reset")
     rs.add_argument("--attacks", default="", help="comma-separated fixtures, e.g. P1,P2,P5,P6")
+    tp = sub.add_parser("tamper")
+    tp.add_argument("--add", required=True, metavar="SKU", help="item to slip into the cart")
     sub.add_parser("timeline")
     md = sub.add_parser("mandate")
     md.add_argument("text", help="your request in your own words")
@@ -345,6 +349,15 @@ def _run(s: Settings, argv: list[str] | None) -> int:
             attacks = [a.strip() for a in args.attacks.split(",") if a.strip()]
             ShopConnector(s.shop_url).reset_shop(attacks=attacks)
             print(start_session(s.gateway_url, s.operator_token, DEMO_MANDATE, c))
+            return 0
+        if args.cmd == "tamper":
+            try:
+                cart = ShopConnector(s.shop_url).tamper_cart(args.add)
+            except ConnectorError as exc:
+                print(f"error: tamper failed: {exc}", file=sys.stderr)
+                return 1
+            items = ", ".join(f"{i['sku']} ×{i['qty']}" for i in cart["items"])
+            print(f"cart {safe_text(cart['cart_id'])} now: {safe_text(items)}")
             return 0
         if args.cmd == "mandate":
             return run_mandate(s, c, args.text)

@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: test-ui weak-smoke two-channel-check setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset smoke
+.PHONY: test-ui weak-smoke two-channel-check setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset demo-tamper agent-hijacked smoke
 
 setup:
 	uv venv --python 3.11 .venv
@@ -62,8 +62,10 @@ dev:
 CLI_ENV = env -i PATH="$$PATH" HOME="$$HOME" GATEWAY_URL="$$GATEWAY_URL" APPROVER_URL="$$APPROVER_URL" \
 	GATEWAY_OPERATOR_TOKEN="$$GATEWAY_OPERATOR_TOKEN" APPROVER_UI_TOKEN="$$APPROVER_UI_TOKEN"
 
+# MANDATE=eval/tasks/demo_mandate_taint.json starts the session the demo's taint beat needs (D-044).
+MANDATE ?=
 session:
-	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli session
+	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli session $(if $(MANDATE),"$(MANDATE)")
 
 # Muse drafts a mandate from your words; you read it back and confirm (SPEC §9).
 mandate:
@@ -86,6 +88,13 @@ agent:
 	  LLM_CACHE_DIR="$$LLM_CACHE_DIR" WEAK_MODEL_BASE_URL="$$WEAK_MODEL_BASE_URL" \
 	  WEAK_MODEL_API_KEY="$$WEAK_MODEL_API_KEY" WEAK_MODEL_ID="$$WEAK_MODEL_ID" \
 	  $(PY) -m agent.run --task "$(TASK)"
+
+# SPEC §18 beats 3-4: a simulated hijacked agent (fixed script, no model; D-044) runs the P1 or P3
+# attack through the gateway (SCRIPT=P1|P3|P4). It gets only the gateway URL. Say "simulated" on screen.
+SCRIPT ?= P1
+agent-hijacked:
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	env -i PATH="$$PATH" HOME="$$HOME" GATEWAY_URL="$$GATEWAY_URL" $(PY) -m agent.hijacked --script "$(SCRIPT)"
 
 test:
 	$(PY) -m pytest -q
@@ -120,6 +129,14 @@ demo-reset:
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	$(CLI_ENV) SHOP_URL="$$SHOP_URL" SHOP_API_KEY="$$SHOP_API_KEY" \
 	  $(PY) -m intentlock.cli reset --attacks "$(ATTACKS)"
+
+# SPEC §18 beat 6: while an approval card is open, slip an item into the cart (default: the P3
+# Express Care add-on). Approving then ends in QUOTE_CHANGED.
+SKU ?= XC-4999
+demo-tamper:
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	$(CLI_ENV) SHOP_URL="$$SHOP_URL" SHOP_API_KEY="$$SHOP_API_KEY" \
+	  $(PY) -m intentlock.cli tamper --add "$(SKU)"
 
 # One muse-spark structured-output call. Sources .env in this shell only and passes just the MODEL_*
 # variables on, so SHOP_API_KEY never reaches the process. The file is never printed.

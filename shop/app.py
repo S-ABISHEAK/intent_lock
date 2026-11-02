@@ -61,6 +61,11 @@ class ShareReq(BaseModel):
     to: str
 
 
+class CartItemReq(BaseModel):
+    sku: str
+    qty: int = 1
+
+
 class ResetReq(BaseModel):
     attacks: list[str] | None = None  # SPEC §14.3 fixture names; None keeps the current set
 
@@ -134,6 +139,10 @@ def create_app(store: Store, api_key: str) -> FastAPI:
     @app.get("/state", dependencies=guarded)
     def state() -> dict:
         return store.state()
+
+    @app.post("/cart/items", dependencies=guarded)
+    def cart_items(req: CartItemReq) -> dict:  # SPEC §18 beat 6: the cart changes after approval
+        return store.add_to_cart(req.sku, req.qty)
 
     @app.post("/reset", dependencies=guarded)
     def reset(req: ResetReq | None = None) -> dict:

@@ -195,6 +195,11 @@ class ShopConnector:
         """Demo/eval only: initial state, optionally with SPEC §14.3 attack fixtures."""
         self._request("POST", "/reset", {"attacks": attacks} if attacks is not None else None)
 
+    def tamper_cart(self, sku: str, qty: int = 1) -> dict[str, Any]:
+        """Demo only (SPEC §18 beat 6): add an item to the cart, as another device on the account
+        would. Returns the cart's items, never request headers."""
+        return self._request("POST", "/cart/items", {"sku": sku, "qty": qty})
+
     def resolve_target(self, kind: str, target_id: str) -> dict[str, Any]:
         """Confirm a destructive tool's target exists (SPEC §6 step 3)."""
         if kind not in TARGET_KINDS:

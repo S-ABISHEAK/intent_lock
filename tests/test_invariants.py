@@ -201,3 +201,18 @@ def test_no_invisible_or_bidi_characters_in_source():
         if any(unicodedata.category(ch) == "Cf" for ch in p.read_text(encoding="utf-8"))
     ]
     assert offenders == []
+
+
+def test_demo_tamper_uses_an_allow_list():
+    makefile = (ROOT / "Makefile").read_text()
+    recipe = makefile.split("\ndemo-tamper:")[1].split("\n\n")[0]
+    assert "$(CLI_ENV)" in recipe and "set -a; [ -f .env ]" in recipe
+    assert "MODEL_API_KEY" not in recipe and "APPROVER_KEY" not in recipe
+
+
+def test_hijacked_agent_gets_only_the_gateway_url():
+    makefile = (ROOT / "Makefile").read_text()
+    recipe = makefile.split("\nagent-hijacked:")[1].split("\n\n")[0]
+    assert "env -i" in recipe
+    passed = set(re.findall(r'([A-Z_]+)="\$\$', recipe))
+    assert passed == {"PATH", "HOME", "GATEWAY_URL"}
