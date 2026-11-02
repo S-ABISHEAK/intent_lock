@@ -96,6 +96,8 @@ def format_receipt(r: dict[str, Any]) -> str:
         what = f"session {p['session_id'][:8]} config={p.get('config')}"
         if "promptguard" in p:
             what += f" promptguard={p['promptguard']}"
+        if "two_channel" in p:
+            what += f" two_channel={p['two_channel']}"
     elif kind == "tool_result":
         what = f"{p['tool']}" + (f"  ERROR {p['error']}" if "error" in p else "")
     elif kind == "proposal":

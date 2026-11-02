@@ -357,3 +357,19 @@ def test_a_wrong_typed_amount_does_not_skip_approval(monkeypatch):
     m = posted[0]["mandate"]
     assert m["auto_approve_under_paise"] == 0 and posted[0]["confirm_auto_approve_paise"] is None
     assert "checkout" in m["allowed_actions"]
+
+
+def test_timeline_session_line_shows_both_feature_states():
+    line = cli.format_receipt(
+        {
+            "seq": 0,
+            "kind": "mandate",
+            "payload": {
+                "session_id": "abcdef1234",
+                "config": "intentlock",
+                "promptguard": "on",
+                "two_channel": "off",
+            },
+        }
+    )
+    assert "promptguard=on" in line and "two_channel=off" in line
