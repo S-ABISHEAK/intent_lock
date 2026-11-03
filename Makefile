@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: test-ui weak-smoke two-channel-check setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset demo-tamper agent-hijacked pg-notebook pg-data pg-train pg-eval smoke
+.PHONY: test-ui weak-smoke two-channel-check setup keys doctor promptguard-check dev session mandate approve agent timeline test lint eval-g eval-e report demo-reset demo-tamper agent-hijacked eval-v pg-notebook pg-data pg-train pg-eval smoke
 
 setup:
 	[ -x $(PY) ] || uv venv --python 3.11 .venv   # never replace it: that drops installed extras
@@ -71,6 +71,7 @@ session:
 
 # Muse drafts a mandate from your words; you read it back and confirm (SPEC §9).
 export TEXT ?=
+export ARGS ?=
 mandate:
 	@set -a; [ -f .env ] && . ./.env; set +a; $(CLI_ENV) $(PY) -m intentlock.cli mandate "$$TEXT"
 
@@ -103,6 +104,16 @@ agent-hijacked:
 # Train on a GPU: upload eval/pg/pg_finetune_kaggle.ipynb to Kaggle (see its first cell);
 # `make pg-notebook` regenerates it. pg-train/pg-eval run the same code locally and need a GPU
 # machine in practice. pg-data builds and hash-locks the data once (already done; locked).
+# Layer V, the Checkout Truth Engine (D-059): locked misleading-page cases, Muse vision on real
+# offline renders, outcomes from the shop's records. Paid: needs MODEL_PRICE_* and the spend cap.
+# `make eval-v ARGS=--pilot` first (4 pages) to measure the cost per page.
+eval-v:
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	env -i PATH="$$PATH" HOME="$$HOME" MODEL_API_KEY="$$MODEL_API_KEY" MODEL_BASE_URL="$$MODEL_BASE_URL" \
+	  MODEL_ID="$$MODEL_ID" LLM_CACHE_DIR="$$LLM_CACHE_DIR" MODEL_PRICE_IN_PER_MTOK="$$MODEL_PRICE_IN_PER_MTOK" \
+	  MODEL_PRICE_OUT_PER_MTOK="$$MODEL_PRICE_OUT_PER_MTOK" EVAL_SPEND_CAP_USD="$$EVAL_SPEND_CAP_USD" \
+	  $(PY) -m eval.layer_v.run $$ARGS
+
 pg-notebook:
 	$(PY) -m eval.pg.notebook
 
@@ -134,7 +145,7 @@ eval-e:
 	env -i PATH="$$PATH" HOME="$$HOME" MODEL_API_KEY="$$MODEL_API_KEY" MODEL_BASE_URL="$$MODEL_BASE_URL" \
 	MODEL_ID="$$MODEL_ID" MODEL_ID_EVAL="$$MODEL_ID_EVAL" LLM_CACHE_DIR="$$LLM_CACHE_DIR" \
 	WEAK_MODEL_BASE_URL="$$WEAK_MODEL_BASE_URL" WEAK_MODEL_API_KEY="$$WEAK_MODEL_API_KEY" \
-	WEAK_MODEL_ID="$$WEAK_MODEL_ID" HF_TOKEN="$$HF_TOKEN" $(PY) -m eval.run_e $(ARGS)
+	WEAK_MODEL_ID="$$WEAK_MODEL_ID" HF_TOKEN="$$HF_TOKEN" $(PY) -m eval.run_e $$ARGS
 
 report:
 	$(PY) -m eval.report

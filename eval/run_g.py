@@ -70,33 +70,43 @@ LATENCY_NOTE = (
 
 
 def facts_from_page(page: dict) -> PageFacts:
-    """A faithful reading of what shop/pages.py renders for this cart (the Layer G page oracle)."""
+    """A faithful reading of what shop/pages.py renders for this cart (the Layer G page oracle),
+    including the Layer V page variants (D-059)."""
+    v = page.get("variant") or {}
     dark = "dark_pattern" in page["styles"]
     lines = page["lines"]
     main = next((x for x in lines if not x["is_addon"]), lines[0])
+    if v.get("discount_paise") is not None:
+        shown_total = v["discount_paise"]
+    elif dark:
+        shown_total = main["unit_paise"] * main["qty"]
+    else:
+        shown_total = v.get("total_shown_paise", page["total_paise"])
+    recurring = "; ".join(
+        f"recurring {x['recurring']['amount_paise']} / {x['recurring']['interval']}"
+        for x in lines
+        if x["recurring"]
+    )
+    if v.get("hide_recurring"):
+        recurring = ""
+    if v.get("recurring_shown"):
+        recurring = "; ".join(filter(None, [recurring, v["recurring_shown"]]))
+    d = page.get("delivery")
     return PageFacts(
-        displayed_total_paise=main["unit_paise"] * main["qty"] if dark else page["total_paise"],
+        displayed_total_paise=shown_total,
         line_items=[
             PageLine(
-                title=x["title"],
+                title=v.get("title_shown", {}).get(x["sku"], x["title"]),
                 price_paise=x["unit_paise"] * x["qty"],
-                preselected=dark and x["is_addon"],
-                qty=x["qty"],
+                preselected=(dark or bool(v.get("preselect_addons"))) and x["is_addon"],
+                qty=v.get("qty_shown", {}).get(x["sku"], x["qty"]),
             )
             for x in lines
         ],
-        recurring_text="; ".join(
-            f"recurring {x['recurring']['amount_paise']} / {x['recurring']['interval']}"
-            for x in lines
-            if x["recurring"]
-        ),
-        refund_policy=page["refund_policy"],
+        recurring_text=recurring,
+        refund_policy="non_refundable" if v.get("footer_nonrefundable") else page["refund_policy"],
         seller_name=", ".join(sorted({x["seller_name"] for x in lines})),
-        delivery_address=(
-            f"{page['delivery']['label']}, {page['delivery']['line']}"
-            if page.get("delivery")
-            else ""
-        ),
+        delivery_address=(f"{d['label']}, {v.get('delivery_shown') or d['line']}" if d else ""),
     )
 
 

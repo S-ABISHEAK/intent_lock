@@ -63,6 +63,7 @@ class Store:
         self._inbox: list[dict] = account["inbox"]
         self._cart: dict[str, int] = {}
         self.fees_paise, self.tax_paise = 0, 0  # set by Layer G hidden-fee cases (SPEC §13.1)
+        self.page_variant: dict = {}  # Layer V (D-059): what a misleading merchant page shows
         for name in sorted(self.attacks):
             self._apply_attack(_load(f"attacks/{name}.json"))
         self._quotes: dict[str, Quote] = {}
@@ -221,6 +222,7 @@ class Store:
         quote_id = "Q-" + canonical_hash(draft, exclude={"quote_id", "quote_hash"})[:12]
         draft = draft.model_copy(update={"quote_id": quote_id})
         quote = draft.model_copy(update={"quote_hash": compute_quote_hash(draft)})
+        self._quotes.pop(quote_id, None)  # the latest issue goes last (review LOW)
         self._quotes[quote_id] = quote
         return quote
 
@@ -255,6 +257,7 @@ class Store:
             ),
             "styles": sorted({p["page_style"] for p, _ in products if p.get("page_style")}),
             "delivery": self._delivery(cart_id),  # D-053: the latest quote's address
+            "variant": dict(self.page_variant),
         }
 
     def _delivery(self, cart_id: str) -> dict | None:
@@ -269,7 +272,11 @@ class Store:
             else {"label": aid, "line": ""}
         )
 
-    def place_order(self, quote_id: str) -> dict:
+    def place_order(self, quote_id: str, client_ref: str | None = None) -> dict:
+        if client_ref:  # D-056: one order per attempt reference, however often it arrives
+            for o in self.orders:
+                if o.get("client_ref") == client_ref:
+                    return dict(o)
         issued = self._quotes.get(quote_id)
         if issued is None:
             raise NotFound(f"unknown quote {quote_id}")
@@ -288,6 +295,7 @@ class Store:
             "lines": [line.model_dump(mode="json") for line in current.lines],
             "shipping_address_id": current.shipping_address_id,
             "status": "placed",
+            "client_ref": client_ref,
         }
         self.orders.append(order)
         self._cart.clear()
@@ -316,12 +324,13 @@ class Store:
                 return {"deleted": address_id}
         raise NotFound(f"unknown address {address_id}")
 
-    def order_by_quote(self, quote_id: str) -> dict:
-        """D-056: the order placed for a quote, for reconciling a lost response."""
+    def order_by_ref(self, client_ref: str) -> dict:
+        """D-056: the order one checkout attempt placed, for reconciling a lost response. By the
+        attempt's own reference: the same quote can be ordered more than once."""
         for o in self.orders:
-            if o["quote_id"] == quote_id:
+            if o.get("client_ref") == client_ref:
                 return dict(o)
-        raise NotFound(f"no order for quote {quote_id}")
+        raise NotFound(f"no order for reference {client_ref}")
 
     def cancel_order(self, order_id: str) -> dict:
         for o in [*self.orders, *self._orders_history]:

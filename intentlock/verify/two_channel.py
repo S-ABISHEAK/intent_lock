@@ -153,6 +153,11 @@ def make_two_channel_step(
         except Exception as exc:  # fail to REVIEW, never pass
             return [make_reason("TWO_CHANNEL_UNAVAILABLE", f"address lookup: {type(exc).__name__}")]
         out = compare(facts, quote, ctx.mandate, address_line=address)
+        dom = evidence.dom_text
+        if address and dom is not None and not address_matches(dom, address):
+            # review LOW: the page's own text must show the saved address, whatever the reading
+            if not any(r.code == "ADDRESS_DISPLAY_MISMATCH" for r in out):
+                out.append(make_reason("ADDRESS_DISPLAY_MISMATCH", "the page doesn't show it"))
         if evidence.dom_text is not None:  # D-057: does the reading match the page's own text?
             from intentlock.verify.dom_check import dom_disagreements
 

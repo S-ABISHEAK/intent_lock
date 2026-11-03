@@ -55,6 +55,7 @@ class QuoteReq(BaseModel):
 
 class OrderReq(BaseModel):
     quote_id: str
+    client_ref: str | None = None  # D-056: the checkout attempt's own reference
 
 
 class ShareReq(BaseModel):
@@ -113,7 +114,7 @@ def create_app(store: Store, api_key: str) -> FastAPI:
 
     @app.post("/orders", dependencies=guarded)
     def orders(req: OrderReq) -> dict:
-        return store.place_order(req.quote_id)
+        return store.place_order(req.quote_id, req.client_ref)
 
     @app.post("/share_cart", dependencies=guarded)
     def share_cart(req: ShareReq) -> dict:
@@ -127,9 +128,9 @@ def create_app(store: Store, api_key: str) -> FastAPI:
     def delete_address(address_id: str) -> dict:
         return store.delete_saved_address(address_id)
 
-    @app.get("/orders/by-quote/{quote_id}", dependencies=guarded)
-    def order_by_quote(quote_id: str) -> dict:
-        return store.order_by_quote(quote_id)
+    @app.get("/orders/by-ref/{client_ref}", dependencies=guarded)
+    def order_by_ref(client_ref: str) -> dict:
+        return store.order_by_ref(client_ref)
 
     @app.post("/orders/{order_id}/cancel", dependencies=guarded)
     def cancel_order(order_id: str) -> dict:

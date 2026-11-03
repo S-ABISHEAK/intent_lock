@@ -79,6 +79,13 @@ class ExecutionResult:
     reconciled: str | None = None  # D-056: CONFIRMED / NOT_PLACED / CANCELLED / UNKNOWN
 
 
+def _public(result: Any) -> Any:
+    """The merchant result without connector-merchant bookkeeping (the attempt reference)."""
+    if isinstance(result, dict):
+        return {k: v for k, v in result.items() if k != "client_ref"}
+    return result
+
+
 def _refused(code: str, detail: str = "") -> ExecutionResult:
     return ExecutionResult(executed=False, reasons=[make_reason(code, detail)])
 
@@ -310,19 +317,21 @@ class ShopConnector:
 
         # 4. call the merchant with the connector-held key
         try:
-            result = self._commit_call(tool, args, quote, contents_hash=decision.quote_hash)
+            result = self._commit_call(
+                tool, args, quote, contents_hash=decision.quote_hash, client_ref=proposal.action_id
+            )
             if tool == "checkout" and quote is not None:
                 problems = order_mismatch(result, quote)
                 if problems:
                     return self._undo_order(result, quote, problems)
-            return ExecutionResult(executed=True, result=result)
+            return ExecutionResult(executed=True, result=_public(result))
         except ConnectorError as exc:
             if exc.status == 409 and tool == "share_cart":
                 return _refused("PAYLOAD_CHANGED", "shop refused: the cart moved before sending")
             if exc.status == 409:
                 return _refused("QUOTE_CHANGED", "shop refused a stale quote")
             if exc.maybe_sent and tool == "checkout" and quote is not None:
-                return self._resolve_lost(quote, exc)  # D-056: ask, never retry
+                return self._resolve_lost(quote, proposal.action_id, exc)  # D-056: ask, no retry
             if exc.maybe_sent:
                 return ExecutionResult(
                     executed=False,
@@ -331,26 +340,30 @@ class ShopConnector:
                 )
             return _refused("EXECUTION_FAILED", str(exc))
 
-    def reconcile(self, quote: Quote) -> tuple[str, dict[str, Any] | None]:
-        """D-056: what happened to this quote's order, by asking the merchant (no retry)."""
+    def reconcile(self, quote: Quote, client_ref: str) -> tuple[str, dict[str, Any] | None]:
+        """D-056: what happened to this attempt's order, by asking the merchant (no retry). By the
+        attempt's own reference (review MED): an earlier order for the same quote never counts."""
         try:
-            order = self._request("GET", f"/orders/by-quote/{urlquote(quote.quote_id, safe='')}")
+            order = self._request("GET", f"/orders/by-ref/{urlquote(client_ref, safe='')}")
         except ConnectorError as exc:
             return ("NOT_PLACED", None) if exc.status == 404 else ("UNKNOWN", None)
+        if order.get("client_ref") != client_ref or order.get("quote_id") != quote.quote_id:
+            return "UNKNOWN", order
         if order.get("status") == "cancelled":
             return "CANCELLED", order
         if order.get("status") == "placed" and not order_mismatch(order, quote):
             return "CONFIRMED", order
         return "UNKNOWN", order
 
-    def _resolve_lost(self, quote: Quote, exc: ConnectorError) -> ExecutionResult:
-        state, order = self.reconcile(quote)
+    def _resolve_lost(self, quote: Quote, client_ref: str, exc: ConnectorError) -> ExecutionResult:
+        state, order = self.reconcile(quote, client_ref)
         if state == "CONFIRMED":
-            return ExecutionResult(executed=True, result=order, reconciled=state)
+            return ExecutionResult(executed=True, result=_public(order), reconciled=state)
         detail = f"no answer ({exc}); merchant says {state.lower().replace('_', ' ')}"
         return ExecutionResult(
             executed=False,
-            uncertain=state == "UNKNOWN",
+            # review LOW: "not found" right after a timeout may still be in flight; stay unknown
+            uncertain=state in ("UNKNOWN", "NOT_PLACED"),
             reasons=[make_reason("EXECUTION_FAILED", detail)],
             reconciled=state,
         )
@@ -385,9 +398,11 @@ class ShopConnector:
         quote: Quote | None,
         *,
         contents_hash: str | None = None,
+        client_ref: str | None = None,
     ) -> dict[str, Any]:
         if tool == "checkout" and quote is not None:
-            return self._request("POST", "/orders", {"quote_id": quote.quote_id})
+            body = {"quote_id": quote.quote_id, "client_ref": client_ref}
+            return self._request("POST", "/orders", body)
         if tool == "share_cart":
             body = {"cart_id": args["cart_id"], "to": args["to"], "contents_hash": contents_hash}
             return self._request("POST", "/share_cart", body)

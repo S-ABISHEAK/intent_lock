@@ -340,7 +340,7 @@ def test_mandate_that_expires_during_the_refetch_does_not_execute(store, nonces)
     "error,lookup_up,uncertain",
     [
         (httpx.ReadTimeout, False, True),  # sent, and nobody can say what happened: unknown
-        (httpx.ReadTimeout, True, False),  # D-056: the merchant says no order -> resolved
+        (httpx.ReadTimeout, True, True),  # no order found, but it may still be running
         (httpx.ConnectError, True, False),  # never sent
     ],
 )
@@ -350,7 +350,7 @@ def test_merchant_timeout_after_sending_is_uncertain(store, nonces, error, looku
     def handler(request):
         if request.url.path == "/orders":
             raise error("boom", request=request)
-        if request.url.path.startswith("/orders/by-quote/") and not lookup_up:
+        if request.url.path.startswith("/orders/by-ref/") and not lookup_up:
             raise httpx.ConnectError("lookup down", request=request)
         r = real.request(
             request.method, request.url.path, content=request.content, headers=dict(request.headers)

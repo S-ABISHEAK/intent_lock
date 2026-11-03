@@ -123,7 +123,7 @@ Integration is one line: point your agent's MCP endpoint at the gateway (`http:/
 - **MCP gateways (identity/role-based):** we add task-scoped mandates, provenance, and quote-bound approvals.
 
 ## Threat coverage (external review, Nov 3)
-An external review raised six gaps. What we did about each, test-first, with each fix checked by deliberately breaking it:
+Two external reviews raised the gaps below. What we did about each, test-first, with each fix checked by deliberately breaking it:
 
 | Gap | Status | How |
 |---|---|---|
@@ -133,8 +133,8 @@ An external review raised six gaps. What we did about each, test-first, with eac
 | Approval not binding the payload | **Fixed** | Shares bind the cart contents, which the card lists, checked by the connector and again by the merchant. Emails were already bound to recipient, subject and body |
 | Confused deputy / token passthrough | **Prevented by design, now tested** | The agent holds no credentials; the gateway never forwards the agent's headers or cookies to the merchant (a recorder test), and uses only its own merchant key. Multi-user identity, audiences and revocation are production work |
 | No session-wide spending limits (found while checking "no resource quotas") | **Fixed** | Budget per session; at most 3 purchases without a card. Also fixed a false positive this exposed: the first order's own confirmation made every later purchase a card |
-| Visual channel manipulated by the merchant page | **Mitigated** | Muse's reading cross-checked against the page's rendered text; both are observations, neither decides |
-| Ambiguous execution (lost response) | **Fixed** | Reconciled by asking the merchant about that quote; never retried |
+| Visual channel manipulated by the merchant page | **Mitigated** | Muse's reading cross-checked against the page's rendered text, and the saved delivery address must appear in that text; both are observations, neither decides. Text made invisible by transparency, off-screen placement or zero size still counts as page text |
+| Ambiguous execution (lost response) | **Fixed** | Each checkout attempt carries its own reference; a lost response is resolved by asking the merchant about that reference (never by quote, never by retrying). "Not found" right after a timeout stays unknown, since the request may still be running |
 | Memory poisoning, delayed attacks | **Not applicable yet** | The agent keeps no memory between sessions. If memory is added, every stored item must keep its source and trust label, and an untrusted recommendation never becomes a user preference |
 
 ## Limitations

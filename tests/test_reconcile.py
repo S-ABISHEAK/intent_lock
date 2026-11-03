@@ -37,19 +37,19 @@ def conn(store):
     )
 
 
-def checkout(conn, tmp_path):
+def checkout(conn, tmp_path, action_id="a1"):
     q = conn.get_quote("c1", "ADDR-0001")
     p = ActionProposal(
-        action_id="a1", session_id="s", tool="checkout",
+        action_id=action_id, session_id="s", tool="checkout",
         args={"cart_id": "c1", "shipping_address_id": "ADDR-0001"}, ts=1,
     )  # fmt: skip
     d = Decision(
-        action_id="a1", outcome="ALLOW", reasons=[make_reason("ALLOWED_IN_MANDATE")],
+        action_id=action_id, outcome="ALLOW", reasons=[make_reason("ALLOWED_IN_MANDATE")],
         quote_hash=q.quote_hash, config="intentlock",
     )  # fmt: skip
     return conn.execute(
         p, d, approval=None, expected=None, verify_key=SigningKey.generate().verify_key,
-        nonces=NonceStore(Database(tmp_path / "n.sqlite")), clock=lambda: 1,
+        nonces=NonceStore(Database(tmp_path / f"{action_id}.sqlite")), clock=lambda: 1,
     )  # fmt: skip
 
 
@@ -80,10 +80,14 @@ def test_a_lost_response_for_a_placed_order_is_confirmed(conn, store, tmp_path, 
     assert calls == ["checkout"] and len(store.orders) == 1  # never retried
 
 
-def test_a_lost_response_with_no_order_is_not_placed(conn, store, tmp_path, monkeypatch):
+def test_a_lost_response_with_no_order_is_not_placed_but_stays_uncertain(
+    conn, store, tmp_path, monkeypatch
+):
+    """Review LOW: a 404 right after a timeout doesn't prove the request isn't still running, so
+    the outcome stays uncertain (and counts as spent) even though no order is found."""
     calls = lose_the_response(monkeypatch, place=False)
     res = checkout(conn, tmp_path)
-    assert not res.executed and not res.uncertain and res.reconciled == "NOT_PLACED"
+    assert not res.executed and res.uncertain and res.reconciled == "NOT_PLACED"
     assert codes(res) == ["EXECUTION_FAILED"] and calls == ["checkout"] and store.orders == []
 
 
@@ -105,7 +109,7 @@ def test_if_the_lookup_fails_the_outcome_stays_unknown(conn, store, tmp_path, mo
     real = ShopConnector._request
 
     def lookup_down(self, method, path, json=None):
-        if path.startswith("/orders/by-quote/"):
+        if path.startswith("/orders/by-ref/"):
             raise ConnectorError("shop unreachable: ConnectError")
         return real(self, method, path, json)
 
@@ -118,9 +122,9 @@ def test_a_found_order_that_differs_from_the_quote_stays_unknown(
     conn, store, tmp_path, monkeypatch
 ):
     lose_the_response(monkeypatch, place=True)
-    real_lookup = Store.order_by_quote
+    real_lookup = Store.order_by_ref
     monkeypatch.setattr(
-        Store, "order_by_quote", lambda self, qid: {**real_lookup(self, qid), "total_paise": 1}
+        Store, "order_by_ref", lambda self, ref: {**real_lookup(self, ref), "total_paise": 1}
     )
     res = checkout(conn, tmp_path)
     assert res.uncertain and res.reconciled == "UNKNOWN"
@@ -129,15 +133,17 @@ def test_a_found_order_that_differs_from_the_quote_stays_unknown(
 def test_a_contradicting_confirmation_is_not_reconciled(conn, store, tmp_path, monkeypatch):
     """D-049 / review MED-3 still holds: the merchant already disagreed with its own quote."""
     honest = store.place_order
-    monkeypatch.setattr(store, "place_order", lambda qid: {**honest(qid), "total_paise": 649_800})
+    monkeypatch.setattr(
+        store, "place_order", lambda qid, ref=None: {**honest(qid, ref), "total_paise": 649_800}
+    )
     res = checkout(conn, tmp_path)
     assert res.uncertain and codes(res) == ["EXECUTION_MISMATCH"] and res.reconciled is None
 
 
 def test_the_lookup_route_needs_the_key(store):
     client = TestClient(create_app(store, KEY), base_url=BASE)
-    assert client.get("/orders/by-quote/Q-1").status_code == 401
-    r = client.get("/orders/by-quote/Q-none", headers={"X-API-Key": KEY})
+    assert client.get("/orders/by-ref/a1").status_code == 401
+    r = client.get("/orders/by-ref/none", headers={"X-API-Key": KEY})
     assert r.status_code == 404
 
 
@@ -151,3 +157,45 @@ def test_the_gateway_reports_a_reconciled_purchase_as_executed(world, monkeypatc
     assert result["status"] == "executed" and len(world.store.orders) == 1
     finished = [r for r in s.receipts if r["payload"].get("event") == "finished"]
     assert finished[-1]["payload"]["reconciled"] == "CONFIRMED"
+
+
+def test_an_earlier_order_for_the_same_quote_is_never_mistaken_for_this_one(
+    conn, store, tmp_path, monkeypatch
+):
+    """Review MED: the same cart to the same address gives the same quote id. An earlier order
+    for it must not make a lost, never-placed attempt look executed."""
+    first = checkout(conn, tmp_path)
+    assert first.executed
+    store.add_to_cart("MS-1001")  # the same cart again -> the same quote id
+    lose_the_response(monkeypatch, place=False)
+    res = checkout(conn, tmp_path, action_id="a2")
+    assert not res.executed and res.uncertain and len(store.orders) == 1
+
+
+def test_a_cancelled_earlier_order_does_not_hide_a_new_placed_one(
+    conn, store, tmp_path, monkeypatch
+):
+    first = checkout(conn, tmp_path)
+    store.cancel_order(first.result["id"])
+    store.add_to_cart("MS-1001")
+    lose_the_response(monkeypatch, place=True)
+    res = checkout(conn, tmp_path, action_id="a2")
+    assert res.executed and res.reconciled == "CONFIRMED"
+    assert res.result["id"] == store.orders[1]["id"]
+
+
+def test_the_same_reference_never_places_two_orders(store):
+    q = ShopConnector(BASE, api_key=KEY, client=TestClient(create_app(store, KEY), base_url=BASE)
+                      ).get_quote("c1", "ADDR-0001")  # fmt: skip
+    a = store.place_order(q.quote_id, client_ref="r1")
+    assert store.place_order(q.quote_id, client_ref="r1") == a and len(store.orders) == 1
+
+
+def test_the_attempt_reference_never_reaches_the_agent(conn, store, tmp_path, monkeypatch):
+    """client_ref is connector-merchant bookkeeping: hidden from the agent and the receipts."""
+    res = checkout(conn, tmp_path)
+    assert res.executed and "client_ref" not in res.result
+    lose_the_response(monkeypatch, place=True)
+    store.add_to_cart("MS-1001")
+    lost = checkout(conn, tmp_path, action_id="a2")
+    assert lost.reconciled == "CONFIRMED" and "client_ref" not in lost.result

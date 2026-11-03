@@ -16,7 +16,7 @@ from intentlock.models import ProvenanceRecord, Reason, TrustLabel
 from intentlock.policy.hard_rules import split_recipients
 from intentlock.policy.reasons import make_reason
 from intentlock.policy.tools import COMMIT_TOOLS
-from intentlock.provenance.labels import label_fields
+from intentlock.provenance.labels import label_fields, shape
 
 if TYPE_CHECKING:
     from intentlock.policy.context import DecisionContext
@@ -306,6 +306,20 @@ def sensitive_values(ctx: "DecisionContext") -> list[tuple[str, str]]:
     return []
 
 
+# D-054 (review MED): the fields of our own commit results that only echo what we sent or the
+# merchant's bookkeeping. Anything else in a commit result (titles, subjects, bodies, unknown
+# fields) is still untrusted content that can name a value.
+ECHO_SHAPES = frozenset({
+    "id", "quote_id", "quote_hash", "status", "total_paise", "shipping_address_id", "to", "kind",
+    "cart_id", "cancelled", "lines[].sku", "lines[].seller_id", "lines[].seller_country",
+    "lines[].qty", "lines[].unit_paise", "cart[].sku", "cart[].qty",
+})  # fmt: skip
+
+
+def _own_echo(r: ProvenanceRecord) -> bool:
+    return r.tool in COMMIT_TOOLS and shape(r.field_path) in ECHO_SHAPES
+
+
 def make_taint_step(ledger: "Ledger"):
     """Step 6: REVIEW `TAINTED_ARG` / `UNKNOWN_PROVENANCE` for any sensitive value without a clean
     source in this session's ledger. Runs only in the `intentlock` config (SPEC §6)."""
@@ -328,7 +342,7 @@ def make_taint_step(ledger: "Ledger"):
             # saved address); they stay untrusted (they clean nothing) but are not attacker text
             named = tuple(
                 rid for rid in index.untrusted_sources(value)
-                if index.by_id[rid].tool not in COMMIT_TOOLS
+                if not _own_echo(index.by_id[rid])
             )  # fmt: skip
             if verdict.status == "clean" and named and picked_field(field):
                 detail = f"{field}={value} is also named by untrusted content {list(named)}"

@@ -318,9 +318,15 @@ class Gateway:
         return summary
 
     def _address_line(self, address_id: str) -> str | None:
-        """D-053: the saved address line the quote ships to (None if it isn't a saved one)."""
-        found = self._saved_address(address_id)
-        return found["line"] if found else None
+        """D-053: the saved address line the quote ships to (None if it isn't a saved one). Any
+        other lookup failure raises, so step 8 says TWO_CHANNEL_UNAVAILABLE (review LOW)."""
+        try:
+            found = self.connector.resolve_target("address", address_id)
+        except ConnectorError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        return str(found.get("line", "")) or None
 
     def _saved_address(self, address_id: str) -> dict[str, str] | None:
         """The saved address behind an id, or None if it is not one of the user's (P6)."""
@@ -380,13 +386,28 @@ class Gateway:
             if refusal:
                 return self._refuse_execution(proposal, refusal, "session limit")
             held = (total, silent)
+        sent = {"started": False}
+        return self._run_reserved(
+            session,
+            held,
+            sent,
+            lambda: self._approve_and_execute(session, proposal, decision, kept, codes, sent),
+        )
+
+    def _run_reserved(self, session: Session, held, sent: dict, run) -> dict[str, Any]:
+        """Run the commit and settle its reservation. If anything fails after the merchant call
+        started, the purchase may have happened, so it counts as spent (review LOW)."""
         outcome = "refused"
         try:
-            response = self._approve_and_execute(session, proposal, decision, kept, codes)
+            response = run()
             outcome = {"executed": "executed", "unknown": "unknown"}.get(
                 response["status"], "refused"
             )
             return response
+        except BaseException:
+            if sent["started"]:
+                outcome = "unknown"
+            raise
         finally:
             if held is not None:
                 with self._lock:
@@ -416,6 +437,7 @@ class Gateway:
         decision: Decision,
         kept: dict,
         codes: list[str],
+        sent: dict,
     ) -> dict[str, Any]:
 
         approval, expected = None, None
@@ -464,6 +486,7 @@ class Gateway:
                 return self._refuse_execution(proposal, "MANDATE_EXPIRED")
 
         self.receipts.append("execution", {"action_id": proposal.action_id, "event": "started"})
+        sent["started"] = True
         result = self.connector.execute(
             proposal,
             decision,

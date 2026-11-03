@@ -120,3 +120,39 @@ def test_demo_mandate_unaffected_by_matching_page():
     q = quote()
     ok = facts(149_900, [PageLine(title="Logitech M221 Wireless Mouse", price_paise=149_900)], HOME)
     assert compare(ok, q, grounded_mandate(), address_line=HOME) == []
+
+
+def test_page_text_without_the_saved_address_is_flagged_even_if_the_reading_is_empty():
+    """Review LOW: an empty reading (e.g. the page told the reader to omit it) must not skip the
+    deterministic check against the page's own text."""
+    from intentlock.verify.two_channel import PageEvidence
+
+    q = quote()
+    blank = facts(
+        149_900, [PageLine(title="Logitech M221 Wireless Mouse", price_paise=149_900)], ""
+    )
+
+    class Ctx:
+        proposal = type("P", (), {"tool": "checkout"})()
+        quote, mandate = q, None
+
+    dom = "Deliver to: Office, 44 MG Road, Bengaluru 560001\nTotal ₹1,499"
+    step = make_two_channel_step(lambda _q: PageEvidence(blank, dom), {}, address_of=lambda _: HOME)
+    assert "ADDRESS_DISPLAY_MISMATCH" in codes(step(Ctx()))
+    ok_dom = f"Deliver to: Home, {HOME}\nTotal ₹1,499"
+    step = make_two_channel_step(
+        lambda _q: PageEvidence(blank, ok_dom), {}, address_of=lambda _: HOME
+    )
+    assert "ADDRESS_DISPLAY_MISMATCH" not in codes(step(Ctx()))
+
+
+def test_the_latest_quote_decides_the_delivery_address():
+    """Review LOW: re-quoting an earlier address moves it to the end."""
+    s = Store()
+    s.add_to_cart("MS-1001")
+    client = TestClient(create_app(s, "k"), base_url="http://shop.test")
+    c = ShopConnector("http://shop.test", api_key="k", client=client)
+    c.get_quote("c1", "ADDR-0001")
+    c.get_quote("c1", "ADDR-0002")
+    c.get_quote("c1", "ADDR-0001")
+    assert s.checkout_page("c1")["delivery"]["line"] == HOME

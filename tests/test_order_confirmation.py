@@ -57,8 +57,8 @@ def checkout(conn, tmp_path):
 def lying(store, monkeypatch, **changes):
     honest = store.place_order
 
-    def place(quote_id):
-        order = honest(quote_id)
+    def place(quote_id, client_ref=None):
+        order = honest(quote_id, client_ref)
         order.update(changes)
         return order
 
@@ -99,7 +99,9 @@ def test_a_differing_confirmation_is_cancelled_and_reported_unknown(
 def test_a_confirmation_missing_fields_is_a_mismatch(conn, store, tmp_path, monkeypatch):
     honest = store.place_order
     monkeypatch.setattr(
-        store, "place_order", lambda qid: {"id": honest(qid)["id"], "status": "placed"}
+        store,
+        "place_order",
+        lambda qid, ref=None: {"id": honest(qid, ref)["id"], "status": "placed"},
     )
     res = checkout(conn, tmp_path)
     assert codes(res) == ["EXECUTION_MISMATCH"] and res.uncertain
@@ -129,8 +131,8 @@ def test_confirmation_numbers_must_be_real_integers(conn, store, tmp_path, monke
     """Review LOW-1: qty=True or a float total is not a match."""
     honest = store.place_order
 
-    def place(qid):
-        o = honest(qid)
+    def place(qid, client_ref=None):
+        o = honest(qid, client_ref)
         o["lines"] = [{**ln, "qty": True} for ln in o["lines"]]
         return o
 

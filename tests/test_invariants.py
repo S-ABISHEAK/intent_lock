@@ -214,7 +214,7 @@ def test_demo_tamper_uses_an_allow_list():
 def test_make_variables_are_never_interpolated_into_shell_text():
     """Review LOW-2: `make demo-tamper SKU='x"; cmd; "'` must not run cmd."""
     makefile = (ROOT / "Makefile").read_text()
-    for var in ("TEXT", "TASK", "SCRIPT", "SKU", "ATTACKS", "MANDATE"):
+    for var in ("TEXT", "TASK", "SCRIPT", "SKU", "ATTACKS", "MANDATE", "ARGS"):
         assert f"$({var})" not in makefile and f"export {var} ?=" in makefile
 
 
@@ -238,3 +238,14 @@ def test_prompt_guard_training_gets_only_the_hf_token():
     makefile = (ROOT / "Makefile").read_text()
     recipe = makefile.split("\npg-train pg-eval:")[1].split("\n\n")[0]
     assert set(re.findall(r'([A-Z_]+)="\$\$', recipe)) == {"PATH", "HOME", "HF_TOKEN"}
+
+
+def test_layer_v_gets_only_model_and_spend_settings():
+    """D-059: the paid vision eval never sees the shop key, tokens or the approver key."""
+    makefile = (ROOT / "Makefile").read_text()
+    recipe = makefile.split("\neval-v:")[1].split("\n\n")[0]
+    passed = set(re.findall(r'([A-Z_]+)="\$\$', recipe))
+    assert passed == {
+        "PATH", "HOME", "MODEL_API_KEY", "MODEL_BASE_URL", "MODEL_ID", "LLM_CACHE_DIR",
+        "MODEL_PRICE_IN_PER_MTOK", "MODEL_PRICE_OUT_PER_MTOK", "EVAL_SPEND_CAP_USD",
+    }  # fmt: skip
