@@ -140,3 +140,19 @@ def test_from_env_needs_all_three_names(monkeypatch, tmp_path):
 def test_without_a_meter_the_client_is_unchanged(tmp_path):
     c = LLMClient(Settings(llm_cache_dir=str(tmp_path)), client=Fake([answer(usage=False)]))
     assert c.chat([{"role": "user", "content": "x"}], TOOLS, use_cache=False)["content"] == "done"
+
+
+def test_a_stop_survives_a_resume(tmp_path):
+    """Review LOW-3: a run stopped for missing usage stays stopped after a resume."""
+    m = meter(tmp_path)
+    with pytest.raises(BudgetExceeded):
+        client(tmp_path, Fake([answer(usage=False)]), m).chat(
+            [{"role": "user", "content": "x"}], TOOLS, use_cache=False
+        )
+    again = meter(tmp_path)
+    fake = Fake([answer()])
+    with pytest.raises(BudgetExceeded, match="usage"):
+        client(tmp_path, fake, again).chat(
+            [{"role": "user", "content": "y"}], TOOLS, use_cache=False
+        )
+    assert fake.calls == 0

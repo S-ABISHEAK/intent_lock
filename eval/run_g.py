@@ -81,6 +81,7 @@ def facts_from_page(page: dict) -> PageFacts:
                 title=x["title"],
                 price_paise=x["unit_paise"] * x["qty"],
                 preselected=dark and x["is_addon"],
+                qty=x["qty"],
             )
             for x in lines
         ],
@@ -91,6 +92,11 @@ def facts_from_page(page: dict) -> PageFacts:
         ),
         refund_policy=page["refund_policy"],
         seller_name=", ".join(sorted({x["seller_name"] for x in lines})),
+        delivery_address=(
+            f"{page['delivery']['label']}, {page['delivery']['line']}"
+            if page.get("delivery")
+            else ""
+        ),
     )
 
 

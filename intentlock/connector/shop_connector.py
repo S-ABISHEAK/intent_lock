@@ -84,19 +84,25 @@ def _refused(code: str, detail: str = "") -> ExecutionResult:
 
 def order_mismatch(order: Any, quote: Quote) -> list[str]:
     """D-049: what in the merchant's order confirmation differs from the quote that was executed.
-    Missing fields count as different (fail closed)."""
+    Missing fields, and numbers that aren't real integers (True, 1.0, "1"; review LOW-1), count
+    as different (fail closed)."""
     if not isinstance(order, dict):
         return ["no confirmation"]
+
+    def whole(v: Any) -> bool:
+        return type(v) is int
+
     want_lines = sorted((ln.sku, ln.qty, ln.unit_paise) for ln in quote.lines)
     try:
-        got_lines = sorted(
-            (str(x["sku"]), int(x["qty"]), int(x["unit_paise"])) for x in order["lines"]
-        )
-    except (KeyError, TypeError, ValueError):
+        got = [(x["sku"], x["qty"], x["unit_paise"]) for x in order["lines"]]
+        ok = all(isinstance(s, str) and whole(q) and whole(u) for s, q, u in got)
+        got_lines = sorted(got) if ok else None
+    except (KeyError, TypeError):
         got_lines = None
+    total = order.get("total_paise")
     checks = {
         "quote_hash": order.get("quote_hash") == quote.quote_hash,
-        "total": order.get("total_paise") == quote.total_paise,
+        "total": whole(total) and total == quote.total_paise,
         "shipping": order.get("shipping_address_id") == quote.shipping_address_id,
         "lines": got_lines == want_lines,
     }
@@ -299,7 +305,7 @@ class ShopConnector:
             if tool == "checkout" and quote is not None:
                 problems = order_mismatch(result, quote)
                 if problems:
-                    return self._undo_order(result, problems)
+                    return self._undo_order(result, quote, problems)
             return ExecutionResult(executed=True, result=result)
         except ConnectorError as exc:
             if exc.status == 409 and tool == "share_cart":
@@ -314,19 +320,28 @@ class ShopConnector:
                 )
             return _refused("EXECUTION_FAILED", str(exc))
 
-    def _undo_order(self, order: dict[str, Any], problems: list[str]) -> ExecutionResult:
-        """D-049: the confirmation differs from the approved quote. Cancel at once; if that
-        fails, say the outcome is unknown rather than report it as safe."""
+    def _undo_order(self, order: Any, quote: Quote, problems: list[str]) -> ExecutionResult:
+        """D-049: the confirmation differs from the approved quote. A merchant that disagrees with
+        its own quote can't vouch for the cancel either (review MED-3), so the outcome is always
+        unknown. The cancel is only sent for an order that names this quote, so an unrelated
+        order is never touched."""
         detail = "order confirmation differs from the approved quote: " + ", ".join(problems)
-        try:
-            self._request("POST", f"/orders/{urlquote(str(order.get('id', '')), safe='')}/cancel")
-        except ConnectorError as exc:
-            return ExecutionResult(
-                executed=False,
-                uncertain=True,
-                reasons=[make_reason("EXECUTION_MISMATCH", f"{detail}; cancel failed: {exc}")],
-            )
-        return _refused("EXECUTION_MISMATCH", f"{detail}; order cancelled")
+        oid = order.get("id") if isinstance(order, dict) else None
+        ours = isinstance(order, dict) and order.get("quote_id") == quote.quote_id
+        if not (ours and isinstance(oid, str) and oid):
+            note = "not cancelled: the confirmation doesn't name this quote's order"
+        else:
+            try:
+                r = self._request("POST", f"/orders/{urlquote(oid, safe='')}/cancel")
+                confirmed = r.get("cancelled") == oid
+                note = f"cancel requested for {oid}" + ("" if confirmed else " (not confirmed)")
+            except ConnectorError as exc:
+                note = f"cancel of {oid} failed: {exc}"
+        return ExecutionResult(
+            executed=False,
+            uncertain=True,
+            reasons=[make_reason("EXECUTION_MISMATCH", f"{detail}; {note}")],
+        )
 
     def _commit_call(
         self,

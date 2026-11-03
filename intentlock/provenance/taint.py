@@ -163,6 +163,15 @@ class TaintIndex:
 
     def classify(self, token: str) -> Verdict:
         records = self.by_token.get(token, [])
+        # D-048 (review MED-1): a choice steered by untrusted text through a search stays tainted
+        # when a later, ordinary listing shows it again; only the user's own words clear it.
+        steered = tuple(
+            r.record_id
+            for r in records
+            if r.label == TrustLabel.DERIVED_UNTRUSTED and r.tool == "search_products"
+        )
+        if steered and not any(r.label == TrustLabel.USER for r in records):
+            return Verdict("tainted", steered)
         if any(r.label in CLEAN_LABELS for r in records):
             return Verdict("clean")
         tainted = tuple(r.record_id for r in records if r.label in TAINT_LABELS)

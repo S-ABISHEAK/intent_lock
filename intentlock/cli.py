@@ -62,6 +62,8 @@ def describe(card: dict[str, Any]) -> str:
     lines = [f"Approval {req['approval_id'][:8]}: {s.get('tool', req['action_tool'])}"]
     for line in s.get("lines", []):
         tag = " (add-on)" if line.get("is_addon") else ""
+        if line.get("condition") == "refurbished":
+            tag += " REFURBISHED"
         lines.append(
             f"  {line['qty']} x {line['title']} [{line['sku']}] {rupees(line['unit_paise'])}"
             f"  seller {line['seller_id']} ({line['seller_country']}){tag}"
@@ -86,6 +88,9 @@ def describe(card: dict[str, Any]) -> str:
             )
     elif s.get("args"):
         lines.append(f"  {json.dumps(s['args'], ensure_ascii=False)}")
+    if s.get("tool") == "share_cart" and isinstance(s.get("items"), list):
+        items = ", ".join(f"{i['sku']} x{i['qty']}" for i in s["items"]) or "(an empty cart)"
+        lines.append(f"  shares with {s.get('args', {}).get('to', '?')}: {items}")
     lines.append(f"  why you are asked: {', '.join(s.get('reasons', [])) or 'unknown'}")
     return "\n".join(safe_text(line) for line in lines)
 

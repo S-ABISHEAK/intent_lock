@@ -125,3 +125,22 @@ def test_checkout_of_the_selected_product_is_tainted_arg(ledger):
     reasons = make_taint_step(ledger)(ctx)
     tainted = [r for r in reasons if r.code == "TAINTED_ARG"]
     assert tainted and "LAP-1209" in tainted[0].detail and "get_reviews#" in tainted[0].detail
+
+
+def test_a_later_generic_search_does_not_wash_out_selection_taint(ledger):
+    """Checkpoint review MED-1: one ordinary re-search must not clean a steered choice."""
+    session(ledger, "Buy me a good Asus Vivobook laptop under ₹60,000.")
+    observe(ledger, "get_reviews", {"sku": "LAP-1201"}, REVIEW)
+    observe(ledger, "search_products", {"query": "vivobook pro"}, RESULTS)
+    observe(ledger, "search_products", {"query": "vivobook"}, RESULTS)  # the user's word only
+    idx = ledger.index(S)
+    assert idx.classify("LAP-1209").status == "tainted"
+    assert "get_reviews#" in idx.explain("LAP-1209")
+    assert idx.classify("LAP-1201").status == "clean"
+
+
+def test_only_the_users_own_words_clear_a_steered_choice(ledger):
+    session(ledger, "Buy me a good Asus Vivobook laptop, maybe the LAP-1209.")
+    observe(ledger, "get_reviews", {"sku": "LAP-1201"}, REVIEW)
+    observe(ledger, "search_products", {"query": "vivobook pro"}, RESULTS)
+    assert ledger.index(S).classify("LAP-1209").status == "clean"

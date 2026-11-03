@@ -21,6 +21,8 @@ export const REASONS: Record<string, { outcome: "ALLOW" | "REVIEW" | "DENY"; tex
   PRICE_DISPLAY_MISMATCH: { outcome: "REVIEW", text: "Total shown on the page ≠ quote total" },
   HIDDEN_LINE_ITEM: { outcome: "REVIEW", text: "Line items on the page and in the quote differ" },
   PRESELECTED_ADDON: { outcome: "REVIEW", text: "Page shows a pre-checked add-on" },
+  QUANTITY_DISPLAY_MISMATCH: { outcome: "REVIEW", text: "A line's quantity on the page differs from the quote (D-053)" },
+  ADDRESS_DISPLAY_MISMATCH: { outcome: "REVIEW", text: "The delivery address on the page is not the quote's address (D-053)" },
   RECURRING_MISMATCH: { outcome: "REVIEW", text: "Recurring terms on the page and in the quote disagree" },
   REFUND_POLICY_UNKNOWN: { outcome: "REVIEW", text: "Refundable required, but the page's policy is unclear" },
   NON_REFUNDABLE: { outcome: "DENY", text: "Refundable required, and the page says non-refundable" },

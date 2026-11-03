@@ -84,13 +84,16 @@ def test_a_matching_confirmation_executes(conn, store, tmp_path):
     ],
     ids=["total", "address", "hash", "lines"],
 )
-def test_a_differing_confirmation_is_cancelled_and_refused(
+def test_a_differing_confirmation_is_cancelled_and_reported_unknown(
     conn, store, tmp_path, monkeypatch, changes
 ):
+    """Review MED-3: a merchant whose confirmation disagrees can't vouch for the cancel either, so
+    the outcome is never reported as settled."""
     lying(store, monkeypatch, **changes)
     res = checkout(conn, tmp_path)
-    assert not res.executed and not res.uncertain and codes(res) == ["EXECUTION_MISMATCH"]
+    assert not res.executed and res.uncertain and codes(res) == ["EXECUTION_MISMATCH"]
     assert store.cancelled_orders == [store.orders[0]["id"]]
+    assert "cancel requested" in res.reasons[0].detail
 
 
 def test_a_confirmation_missing_fields_is_a_mismatch(conn, store, tmp_path, monkeypatch):
@@ -99,7 +102,8 @@ def test_a_confirmation_missing_fields_is_a_mismatch(conn, store, tmp_path, monk
         store, "place_order", lambda qid: {"id": honest(qid)["id"], "status": "placed"}
     )
     res = checkout(conn, tmp_path)
-    assert codes(res) == ["EXECUTION_MISMATCH"] and len(store.cancelled_orders) == 1
+    assert codes(res) == ["EXECUTION_MISMATCH"] and res.uncertain
+    assert store.cancelled_orders == []  # no quote_id: nothing proves which order is ours
 
 
 def test_if_the_cancel_fails_the_outcome_is_unknown_not_safe(conn, store, tmp_path, monkeypatch):
@@ -111,3 +115,24 @@ def test_if_the_cancel_fails_the_outcome_is_unknown_not_safe(conn, store, tmp_pa
     monkeypatch.setattr(store, "cancel_order", refuse)
     res = checkout(conn, tmp_path)
     assert not res.executed and res.uncertain and codes(res) == ["EXECUTION_MISMATCH"]
+
+
+def test_a_confirmation_naming_another_order_never_cancels_it(conn, store, tmp_path, monkeypatch):
+    """Review MED-3: a wrong total plus a historical order id. The past order is not touched."""
+    lying(store, monkeypatch, total_paise=649_800, id="ORD-5001", quote_id="Q-someone-else")
+    res = checkout(conn, tmp_path)
+    assert res.uncertain and codes(res) == ["EXECUTION_MISMATCH"]
+    assert "ORD-5001" not in store.cancelled_orders
+
+
+def test_confirmation_numbers_must_be_real_integers(conn, store, tmp_path, monkeypatch):
+    """Review LOW-1: qty=True or a float total is not a match."""
+    honest = store.place_order
+
+    def place(qid):
+        o = honest(qid)
+        o["lines"] = [{**ln, "qty": True} for ln in o["lines"]]
+        return o
+
+    monkeypatch.setattr(store, "place_order", place)
+    assert codes(checkout(conn, tmp_path)) == ["EXECUTION_MISMATCH"]

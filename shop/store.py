@@ -254,7 +254,20 @@ class Store:
                 else "refundable"
             ),
             "styles": sorted({p["page_style"] for p, _ in products if p.get("page_style")}),
+            "delivery": self._delivery(cart_id),  # D-053: the latest quote's address
         }
+
+    def _delivery(self, cart_id: str) -> dict | None:
+        quotes = [q for q in self._quotes.values() if q.cart_id == cart_id]
+        if not quotes:
+            return None
+        aid = quotes[-1].shipping_address_id
+        found = next((a for a in self._addresses if a["id"] == aid), None)
+        return (
+            {"label": found["label"], "line": found["line"]}
+            if found
+            else {"label": aid, "line": ""}
+        )
 
     def place_order(self, quote_id: str) -> dict:
         issued = self._quotes.get(quote_id)
@@ -286,7 +299,7 @@ class Store:
         items = self.cart(cart_id)["items"]
         if contents_hash is not None and cart_contents_hash(cart_id, items) != contents_hash:
             raise StaleQuote("cart changed since the share was approved")  # D-051
-        msg = {"kind": "share_cart", "to": to, "cart": self.cart(cart_id)["items"]}
+        msg = {"kind": "share_cart", "to": to, "cart": items}  # the read that was checked
         self.messages.append(msg)
         return msg
 

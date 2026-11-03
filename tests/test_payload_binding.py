@@ -180,3 +180,18 @@ def test_contents_moving_between_the_recheck_and_the_send_are_refused(world, mon
     assert fired.is_set()
     assert result == {"status": "denied", "reasons": ["PAYLOAD_CHANGED"]}
     assert world.store.messages == []
+
+
+def test_the_shared_message_is_the_cart_that_was_hashed(store, conn, monkeypatch):
+    """Review LOW-2: the shop builds the message from the same read it checked."""
+    h = conn.cart_contents("c1")["contents_hash"]
+    reads = []
+    orig = Store.cart
+
+    def counting(self, cart_id="c1"):
+        reads.append(cart_id)
+        return orig(self, cart_id)
+
+    monkeypatch.setattr(Store, "cart", counting)
+    store.share_cart("c1", "asha@example.com", h)
+    assert len(reads) == 1 and store.messages[0]["cart"] == [{"sku": "MS-1001", "qty": 1}]

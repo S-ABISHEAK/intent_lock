@@ -38,6 +38,12 @@ def load_hf_scorer(token: str | None = None, model: str | None = None) -> Scorer
         return None
     try:
         clf = pipeline("text-classification", model=model or MODEL_ID, token=token or None)
+        labels = {str(v).lower() for v in clf.model.config.id2label.values()}
+        if not (labels <= {"label_0", "label_1"} or any("malicious" in x for x in labels)):
+            # review LOW-4: unknown labels would invert the score and silently disable step 9
+            last_load_error = f"unsupported labels {sorted(labels)}"
+            log.warning("Prompt Guard model has unsupported labels; step 9 is off")
+            return None
     except Exception as exc:  # gated, offline, wrong token: the feature stays off, it never ALLOWs
         message = f"{type(exc).__name__}: {exc}"
         if token:

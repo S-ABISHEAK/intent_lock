@@ -1,6 +1,7 @@
 """Prompt Guard 2 signal (SPEC §12, pipeline step 9; D-021, D-034). Escalation only."""
 
 import asyncio
+import json
 
 import pytest
 
@@ -237,3 +238,21 @@ def test_a_custom_model_that_fails_to_load_turns_the_step_off(monkeypatch):
     monkeypatch.setattr(promptguard, "load_hf_scorer", lambda token=None, model=None: None)
     monkeypatch.setenv("PROMPT_GUARD_MODEL", "/nowhere/pg-finetuned")
     assert resolve_promptguard(frozenset({8, 9})) == (frozenset({8}), None, "unavailable")
+
+
+def test_a_model_with_unknown_labels_is_reported_unavailable(tmp_path):
+    """Review LOW-4: a local model whose labels aren't benign/malicious (or LABEL_0/LABEL_1) would
+    have its scores silently inverted; it must not load."""
+    pytest.importorskip("transformers")
+    from intentlock.verify import promptguard
+    from intentlock.verify.promptguard import load_hf_scorer
+    from tests.test_pg_finetune import make_tiny
+
+    path = make_tiny(tmp_path / "m")
+    cfg = json.loads((path / "config.json").read_text())
+    cfg["id2label"] = {"0": "SAFE", "1": "INJECTION"}
+    cfg["label2id"] = {"SAFE": 0, "INJECTION": 1}
+    (path / "config.json").write_text(json.dumps(cfg))
+    assert load_hf_scorer(model=str(path)) is None
+    assert "labels" in (promptguard.last_load_error or "")
+    assert load_hf_scorer(model=str(make_tiny(tmp_path / "ok"))) is not None  # LABEL_0/LABEL_1

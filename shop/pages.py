@@ -64,7 +64,13 @@ def render(page: dict) -> str:
         else '<span class="fineprint">All sales final. Non-refundable once shipped.</span>'
     )
     sellers = ", ".join(sorted({escape(line["seller_name"]) for line in lines}))
+    d = page.get("delivery")
+    if d:
+        delivery = f'<p class="delivery">Deliver to: {escape(d["label"])}, {escape(d["line"])}</p>'
+    else:
+        delivery = ""
     return TEMPLATE.substitute(
         heading=heading, cart_id=escape(page["cart_id"]), sellers=sellers, headline=headline,
+        delivery=delivery,
         rows="\n".join(rows), recurring=recurring, total=total_html, policy=policy, footer=footer,
     )  # fmt: skip

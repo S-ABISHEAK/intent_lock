@@ -122,7 +122,9 @@ class Gateway:
         if 8 in features:  # two-channel (SPEC §11): built from the connector's page reader
             if page_reader is None or 8 in extra_steps:
                 raise ValueError("step 8 needs a page reader and is installed by the gateway")
-            self.extra_steps[8] = make_two_channel_step(page_reader, {})
+            self.extra_steps[8] = make_two_channel_step(
+                page_reader, {}, address_of=self._address_line
+            )
         self.two_channel_status = two_channel_status or ("on" if 8 in features else "off")
         self.scorer = scorer
         self.promptguard_status = promptguard_status or ("on" if 9 in features else "off")
@@ -284,6 +286,11 @@ class Gateway:
                 raise QuoteMoved
             summary["items"] = c["items"]
         return summary
+
+    def _address_line(self, address_id: str) -> str | None:
+        """D-053: the saved address line the quote ships to (None if it isn't a saved one)."""
+        found = self._saved_address(address_id)
+        return found["line"] if found else None
 
     def _saved_address(self, address_id: str) -> dict[str, str] | None:
         """The saved address behind an id, or None if it is not one of the user's (P6)."""

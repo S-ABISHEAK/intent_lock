@@ -33,6 +33,8 @@ REGISTRY: dict[str, tuple[Outcome, Source]] = {
     "PRICE_DISPLAY_MISMATCH": ("REVIEW", "two_channel"),
     "HIDDEN_LINE_ITEM": ("REVIEW", "two_channel"),
     "PRESELECTED_ADDON": ("REVIEW", "two_channel"),
+    "QUANTITY_DISPLAY_MISMATCH": ("REVIEW", "two_channel"),  # D-053
+    "ADDRESS_DISPLAY_MISMATCH": ("REVIEW", "two_channel"),  # D-053
     "RECURRING_MISMATCH": ("REVIEW", "two_channel"),
     "REFUND_POLICY_UNKNOWN": ("REVIEW", "two_channel"),
     "NON_REFUNDABLE": ("DENY", "two_channel"),

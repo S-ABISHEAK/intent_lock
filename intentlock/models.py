@@ -112,6 +112,7 @@ class PageLine(_Model):
     title: str
     price_paise: Paise
     preselected: bool = False
+    qty: Annotated[int, Field(strict=True, ge=0)] = 1  # D-053
 
 
 class PageFacts(_Model):
@@ -123,6 +124,7 @@ class PageFacts(_Model):
     recurring_text: str = ""
     refund_policy: Literal["refundable", "non_refundable", "unknown"]
     seller_name: str = ""
+    delivery_address: str = ""  # D-053: the "Deliver to" text, as shown
 
 
 class Reason(_Model):

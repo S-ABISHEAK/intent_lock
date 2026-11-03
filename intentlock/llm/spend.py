@@ -49,6 +49,7 @@ class SpendMeter:
             saved = json.loads(self.path.read_text())
             self.tokens_in, self.tokens_out = saved["tokens_in"], saved["tokens_out"]
             self.spent, self.calls = saved["spent_micro_usd"], saved["calls"]
+            self.stopped = saved.get("stopped")  # review LOW-3: a stop survives a resume
 
     @classmethod
     def from_env(cls, path: Path | None) -> "SpendMeter":

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { api, errorText, type Card } from "../api";
+import { cardFacts } from "../cardFacts";
 import { rupees } from "../money";
 import { ReasonList } from "./Badge";
 
@@ -21,6 +22,7 @@ function CardView({ card }: { card: Card }) {
   const [state, setState] = useState<"idle" | "busy" | "done">("idle");
   const [error, setError] = useState("");
   const s = card.summary ?? {};
+  const facts = cardFacts(s);
   const left = Math.max(0, Math.floor(card.request.expires_at - now));
 
   const act = async (f: () => Promise<unknown>) => {
@@ -60,6 +62,9 @@ function CardView({ card }: { card: Card }) {
                 <td>
                   {l.title} <span className="text-slate-400">{l.sku}</span>
                   {l.is_addon && <span className="ml-2 rounded bg-amber-200 px-1 text-xs">add-on</span>}
+                  {facts.refurbished.includes(l.sku) && (
+                    <span className="ml-2 rounded bg-amber-300 px-1 text-xs font-semibold">refurbished</span>
+                  )}
                 </td>
                 <td>
                   {l.seller_id} ({l.seller_country})
@@ -102,6 +107,23 @@ function CardView({ card }: { card: Card }) {
             <span className="font-semibold text-deny">
               {s.shipping_address_id} is not one of your saved addresses
             </span>
+          )}
+        </div>
+      )}
+
+      {facts.shareItems && (
+        <div className="rounded bg-amber-50 p-2 text-sm">
+          <div>
+            Shares these items with <strong>{facts.shareTo}</strong>:
+          </div>
+          {facts.shareItems.length ? (
+            <ul className="list-disc pl-5">
+              {facts.shareItems.map((x) => (
+                <li key={x}>{x}</li>
+              ))}
+            </ul>
+          ) : (
+            <div className="text-slate-500">(an empty cart)</div>
           )}
         </div>
       )}

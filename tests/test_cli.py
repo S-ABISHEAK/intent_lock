@@ -373,3 +373,39 @@ def test_timeline_session_line_shows_both_feature_states():
         }
     )
     assert "promptguard=on" in line and "two_channel=off" in line
+
+
+def test_card_shows_share_contents_and_refurbished_lines():
+    """Checkpoint review MED-2: the CLI card shows what the approval binds."""
+    share = cli.describe(
+        {
+            "request": {"approval_id": "a" * 32, "action_tool": "share_cart"},
+            "summary": {
+                "tool": "share_cart",
+                "args": {"cart_id": "c1", "to": "asha@example.com"},
+                "items": [{"sku": "MS-1001", "qty": 1}],
+                "reasons": ["APPROVAL_REQUIRED"],
+            },
+        }
+    )
+    assert "asha@example.com" in share and "MS-1001 x1" in share
+    line = {"sku": "LAP-1202", "title": "Asus Vivobook 15 (Refurbished)", "qty": 1,
+            "unit_paise": 3899900, "seller_id": "SEL-IN02", "seller_country": "IN",
+            "is_addon": False, "condition": "refurbished"}  # fmt: skip
+    card = cli.describe(
+        {
+            "request": {"approval_id": "b" * 32, "action_tool": "checkout"},
+            "summary": {
+                "tool": "checkout",
+                "lines": [line],
+                "fees_paise": 0,
+                "tax_paise": 0,
+                "total_paise": 3899900,
+                "recurring": [],
+                "shipping_address_id": "ADDR-0001",
+                "shipping_address": {"label": "Home", "line": "x"},
+                "reasons": ["REFURBISHED_ITEM", "APPROVAL_REQUIRED"],
+            },  # fmt: skip
+        }
+    )
+    assert "REFURBISHED" in card
