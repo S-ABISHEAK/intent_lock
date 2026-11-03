@@ -127,6 +127,10 @@ def create_app(store: Store, api_key: str) -> FastAPI:
     def delete_address(address_id: str) -> dict:
         return store.delete_saved_address(address_id)
 
+    @app.get("/orders/by-quote/{quote_id}", dependencies=guarded)
+    def order_by_quote(quote_id: str) -> dict:
+        return store.order_by_quote(quote_id)
+
     @app.post("/orders/{order_id}/cancel", dependencies=guarded)
     def cancel_order(order_id: str) -> dict:
         return store.cancel_order(order_id)

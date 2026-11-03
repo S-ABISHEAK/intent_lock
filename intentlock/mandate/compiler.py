@@ -20,7 +20,9 @@ from intentlock.mandate.grounding import (
     ground,
     parse_money_paise,
 )
+from intentlock.mandate.unenforced import unenforced_phrases
 from intentlock.models import EpochSeconds, Grant, Mandate, Paise
+from intentlock.policy.context import MAX_SILENT_PURCHASES
 
 MANDATE_TTL = 24 * 3600
 
@@ -135,12 +137,14 @@ def readback(report: GroundingReport) -> list[dict]:
             _span(m, "auto_approve_under_paise"),
             "auto_approve_under_paise",
         )
+        add("limit", f"At most {MAX_SILENT_PURCHASES} purchases without asking per session")
     else:
         add("limit", "Every purchase needs your approval")
     if m.budget_total_paise is not None:
         add(
             "limit",
-            f"Total ceiling {_rupees(m.budget_total_paise)} including fees, tax and add-ons",
+            f"Total ceiling {_rupees(m.budget_total_paise)} for this whole session, including fees,"
+            " tax and add-ons",
         )
     if m.allowed_seller_countries is not None:
         countries = ", ".join(m.allowed_seller_countries) or "none (see the question below)"
@@ -177,6 +181,12 @@ def readback(report: GroundingReport) -> list[dict]:
             )
     for q in report.clarifications:
         add("question", q)
+    for phrase in unenforced_phrases(m.user_text):  # D-058: named, never silently dropped
+        add(
+            "not_enforced",
+            f"Not enforced by IntentLock: '{phrase}' (check the item yourself)",
+            phrase,
+        )
     return out
 
 

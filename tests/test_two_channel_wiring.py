@@ -109,10 +109,11 @@ def test_extraction_sends_the_png_as_an_image_with_the_instruction():
 
 def test_the_page_reader_never_puts_the_shop_key_in_the_model_request(monkeypatch):
     c = ShopConnector("http://localhost:8001", api_key=KEY)
-    monkeypatch.setattr(c, "render_checkout", lambda q: PNG)
+    monkeypatch.setattr(c, "render_checkout_evidence", lambda q: (PNG, "DOM-TEXT-7f3a Total"))
     llm = FakeLLM(facts())
     make_page_reader(c, llm, model="m")(make_quote())
     assert KEY not in str(llm.calls) and "X-API-Key" not in str(llm.calls)
+    assert "DOM-TEXT-7f3a" not in str(llm.calls)  # D-057: the page text never goes to the model
 
 
 # -- gateway: step 8 only with a reader; status recorded; real page through the step --------

@@ -14,7 +14,9 @@ import logging
 import os
 import re
 from collections.abc import Callable, MutableMapping
+from dataclasses import dataclass
 from difflib import SequenceMatcher
+from typing import Any
 
 from intentlock.models import Mandate, PageFacts, Quote, Reason
 from intentlock.policy.reasons import make_reason
@@ -24,7 +26,17 @@ log = logging.getLogger(__name__)
 TITLE_MATCH = 0.85
 TIMEOUT_S = 45.0
 
-PageReader = Callable[[Quote], PageFacts]
+
+@dataclass(frozen=True)
+class PageEvidence:
+    """What one render yields: Muse's reading of the screenshot and the page's own visible text
+    (D-057). A reader may return bare PageFacts (no DOM text); then there is no cross-check."""
+
+    facts: PageFacts
+    dom_text: str | None = None
+
+
+PageReader = Callable[[Quote], "PageFacts | PageEvidence"]
 
 
 QTY_SUFFIX = re.compile(r"\s*\(?\s*[x×]\s*\d+\s*\)?\s*$", re.IGNORECASE)  # "× 1", "(x1)"
@@ -108,7 +120,7 @@ def compare(
 
 def make_two_channel_step(
     read_page: PageReader,
-    cache: MutableMapping[str, PageFacts],
+    cache: MutableMapping[str, Any],
     *,
     timeout_s: float = TIMEOUT_S,
     address_of: Callable[[str], str | None] | None = None,
@@ -131,14 +143,21 @@ def make_two_channel_step(
                 return [make_reason("TWO_CHANNEL_UNAVAILABLE", f"timed out after {timeout_s:g}s")]
             except Exception as exc:  # fail to REVIEW, never pass (SPEC §11.4)
                 return [make_reason("TWO_CHANNEL_UNAVAILABLE", type(exc).__name__)]
-            if not isinstance(facts, PageFacts):
+            if not isinstance(facts, PageFacts | PageEvidence):
                 return [make_reason("TWO_CHANNEL_UNAVAILABLE", "no page facts")]
             cache[quote.quote_hash] = facts
+        evidence = facts if isinstance(facts, PageEvidence) else PageEvidence(facts)
+        facts = evidence.facts
         try:  # D-053: the saved address the quote ships to, for the page's "Deliver to"
             address = address_of(quote.shipping_address_id) if address_of else None
         except Exception as exc:  # fail to REVIEW, never pass
             return [make_reason("TWO_CHANNEL_UNAVAILABLE", f"address lookup: {type(exc).__name__}")]
-        return compare(facts, quote, ctx.mandate, address_line=address)
+        out = compare(facts, quote, ctx.mandate, address_line=address)
+        if evidence.dom_text is not None:  # D-057: does the reading match the page's own text?
+            from intentlock.verify.dom_check import dom_disagreements
+
+            out += dom_disagreements(facts, evidence.dom_text)
+        return out
 
     return step
 
@@ -176,8 +195,9 @@ def extract_page_facts(png: bytes, llm, *, model: str | None = None) -> PageFact
 
 
 def make_page_reader(connector, llm, *, model: str | None = None) -> PageReader:
-    def read(quote: Quote) -> PageFacts:
-        return extract_page_facts(connector.render_checkout(quote), llm, model=model)
+    def read(quote: Quote) -> PageEvidence:
+        png, dom_text = connector.render_checkout_evidence(quote)
+        return PageEvidence(extract_page_facts(png, llm, model=model), dom_text)
 
     return read
 

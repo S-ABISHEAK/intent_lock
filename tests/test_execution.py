@@ -337,14 +337,21 @@ def test_mandate_that_expires_during_the_refetch_does_not_execute(store, nonces)
 
 
 @pytest.mark.parametrize(
-    "error,uncertain", [(httpx.ReadTimeout, True), (httpx.ConnectError, False)]
+    "error,lookup_up,uncertain",
+    [
+        (httpx.ReadTimeout, False, True),  # sent, and nobody can say what happened: unknown
+        (httpx.ReadTimeout, True, False),  # D-056: the merchant says no order -> resolved
+        (httpx.ConnectError, True, False),  # never sent
+    ],
 )
-def test_merchant_timeout_after_sending_is_uncertain(store, nonces, error, uncertain):
+def test_merchant_timeout_after_sending_is_uncertain(store, nonces, error, lookup_up, uncertain):
     real = TestClient(create_app(store, SHOP_KEY), base_url="http://shop")
 
     def handler(request):
         if request.url.path == "/orders":
             raise error("boom", request=request)
+        if request.url.path.startswith("/orders/by-quote/") and not lookup_up:
+            raise httpx.ConnectError("lookup down", request=request)
         r = real.request(
             request.method, request.url.path, content=request.content, headers=dict(request.headers)
         )
@@ -360,3 +367,4 @@ def test_merchant_timeout_after_sending_is_uncertain(store, nonces, error, uncer
     p, d, _ = checkout_review(c)
     res = run(c, nonces, p, d, approved(p, d))
     assert codes(res) == ["EXECUTION_FAILED"] and not res.executed and res.uncertain is uncertain
+    assert store.orders == []  # never retried, never placed

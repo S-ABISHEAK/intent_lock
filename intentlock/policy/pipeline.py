@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping
 
 from intentlock.connector.shop_connector import ConnectorError
 from intentlock.models import ActionProposal, Decision, Mandate, Reason
-from intentlock.policy.context import DecisionContext
+from intentlock.policy.context import MAX_SILENT_PURCHASES, DecisionContext
 from intentlock.policy.hard_rules import hard_rules
 from intentlock.policy.reasons import make_reason, outcome_of, worst
 from intentlock.policy.rule_of_two import SessionFlags, step_rule_of_two
@@ -105,6 +105,13 @@ def step_approval(ctx: DecisionContext) -> list[Reason]:
         ]
         if ctx.quote.total_paise >= ctx.mandate.auto_approve_under_paise:
             out.append(make_reason("APPROVAL_REQUIRED", f"total {ctx.quote.total_paise}"))
+        elif ctx.session_silent_count >= MAX_SILENT_PURCHASES:  # D-054
+            out.append(
+                make_reason(
+                    "AUTO_APPROVE_LIMIT_REACHED",
+                    f"{ctx.session_silent_count} purchases already made without asking",
+                )
+            )
         return out
     return [make_reason("APPROVAL_REQUIRED", ctx.proposal.tool)]  # comms / destructive
 
@@ -131,10 +138,14 @@ def _isolated(ctx: DecisionContext) -> DecisionContext:
         quote=ctx.quote.model_copy(deep=True) if ctx.quote else None,
         requested_skus=ctx.requested_skus,
         flags=ctx.flags,
+        session_spent_paise=ctx.session_spent_paise,
+        session_silent_count=ctx.session_silent_count,
     )
 
 
-def _run_steps(proposal, mandate, config, connector, now, requested_skus, extra, flags, features):
+def _run_steps(
+    proposal, mandate, config, connector, now, requested_skus, extra, flags, features, totals=(0, 0)
+):
     steps = steps_for(config, features)
     if set(extra) & set(BUILTIN_STEPS):
         raise ValueError("built-in steps cannot be replaced")
@@ -149,6 +160,8 @@ def _run_steps(proposal, mandate, config, connector, now, requested_skus, extra,
         now=now,
         requested_skus=frozenset(requested_skus),
         flags=flags,
+        session_spent_paise=totals[0],
+        session_silent_count=totals[1],
     )
     if 2 in steps and (reasons := step_scope(ctx)):
         return _decision(proposal, config, reasons, None)
@@ -186,6 +199,8 @@ def decide(
     error_sink: ErrorSink | None = None,
     flags: SessionFlags | None = None,
     features: frozenset[int] = frozenset(),
+    session_spent_paise: int = 0,
+    session_silent_count: int = 0,
 ) -> Decision:
     try:
         return _run_steps(
@@ -198,6 +213,7 @@ def decide(
             extra_steps or {},
             flags,
             frozenset(features),
+            (session_spent_paise, session_silent_count),
         )
     except Exception as exc:  # fail closed (CLAUDE.md invariant 2): never let an error become ALLOW
         if error_sink is not None:

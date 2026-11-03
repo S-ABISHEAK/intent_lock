@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from intentlock.models import ActionProposal, Mandate, Quote
 from intentlock.policy.rule_of_two import SessionFlags
 
+MAX_SILENT_PURCHASES = 3  # D-054: purchases per session that may skip the card
+
 
 @dataclass(frozen=True)
 class DecisionContext:
@@ -19,6 +21,9 @@ class DecisionContext:
     now: int
     quote: Quote | None = None
     payload_hash: str | None = None  # share_cart: hash of the cart contents it would send (D-051)
+    # D-054: what this session already executed or has in flight, supplied by the proxy
+    session_spent_paise: int = 0
+    session_silent_count: int = 0
     # SKUs the agent explicitly added with add_to_cart; supplied by the proxy (D-014)
     requested_skus: frozenset[str] = frozenset()
     # Rule-of-Two A/B flags from the proxy's session (SPEC §8); required by step 7

@@ -316,6 +316,13 @@ class Store:
                 return {"deleted": address_id}
         raise NotFound(f"unknown address {address_id}")
 
+    def order_by_quote(self, quote_id: str) -> dict:
+        """D-056: the order placed for a quote, for reconciling a lost response."""
+        for o in self.orders:
+            if o["quote_id"] == quote_id:
+                return dict(o)
+        raise NotFound(f"no order for quote {quote_id}")
+
     def cancel_order(self, order_id: str) -> dict:
         for o in [*self.orders, *self._orders_history]:
             if o["id"] == order_id:

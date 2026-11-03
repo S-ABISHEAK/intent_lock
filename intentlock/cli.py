@@ -121,7 +121,7 @@ def format_receipt(r: dict[str, Any]) -> str:
     return safe_text(f"{r['seq']:>4}  {kind:<11} {what}")
 
 
-MARKS = {"grant": "+", "limit": "-", "not_granted": "!", "question": "?"}
+MARKS = {"grant": "+", "limit": "-", "not_granted": "!", "question": "?", "not_enforced": "~"}
 
 
 def format_readback(lines: list[dict[str, Any]]) -> str:

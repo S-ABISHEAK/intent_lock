@@ -25,6 +25,7 @@ from intentlock.approvals.verify import NonceStore
 from intentlock.connector.shop_connector import ConnectorError, ShopConnector
 from intentlock.mandate.grounding import granted_addons
 from intentlock.models import ActionProposal, Approval, ApprovalRequest, Decision, Mandate
+from intentlock.policy.context import MAX_SILENT_PURCHASES
 from intentlock.policy.pipeline import StepFn, decide
 from intentlock.policy.rule_of_two import SessionFlags
 from intentlock.policy.tools import TOOL_ARGS, sanitize_args
@@ -81,6 +82,35 @@ class Session:
     mandate: Mandate | None
     flags: SessionFlags = field(default_factory=SessionFlags)
     added_skus: list[str] = field(default_factory=list)  # every add_to_cart, for the record
+    # D-054: money executed / in flight this session, and purchases that skipped the card
+    spent_paise: int = 0
+    reserved_paise: int = 0
+    silent_count: int = 0
+    silent_reserved: int = 0
+
+
+def reserve(session: Session, total_paise: int, *, silent: bool) -> str | None:
+    """D-054: claim this purchase's share of the session limits before executing it. Called under
+    the gateway lock, so two checkouts in flight can't both fit the same budget. Returns the
+    refusal code, or None when the reservation is made."""
+    m = session.mandate
+    budget = m.budget_total_paise if m is not None else None
+    if budget is not None and session.spent_paise + session.reserved_paise + total_paise > budget:
+        return "SESSION_BUDGET_EXCEEDED"
+    if silent and session.silent_count + session.silent_reserved >= MAX_SILENT_PURCHASES:
+        return "AUTO_APPROVE_LIMIT_REACHED"
+    session.reserved_paise += total_paise
+    session.silent_reserved += int(silent)
+    return None
+
+
+def settle(session: Session, total_paise: int, *, silent: bool, outcome: str) -> None:
+    """Release a reservation. An executed or unknown outcome counts as spent (fail closed)."""
+    session.reserved_paise -= total_paise
+    session.silent_reserved -= int(silent)
+    if outcome in ("executed", "unknown"):
+        session.spent_paise += total_paise
+        session.silent_count += int(silent)
 
 
 class Gateway:
@@ -328,11 +358,65 @@ class Gateway:
             error_sink=self._error,
             flags=session.flags,
             features=self.features,
+            **self._session_totals(session),
         )
         self.receipts.append("decision", decision.model_dump(mode="json"))
         codes = [r.code for r in decision.reasons]
         if decision.outcome == "DENY":
             return {"status": "denied", "reasons": codes}
+
+        # D-054: reserve this purchase's share of the session limits, re-checked under the lock
+        held: tuple[int, bool] | None = None
+        if self._limited(session, proposal):
+            try:
+                total = self._decided_total(proposal, decision, kept)
+            except QuoteMoved:
+                return self._refuse_execution(proposal, "QUOTE_CHANGED", "before reserving")
+            except ConnectorError as exc:
+                return self._refuse_execution(proposal, "QUOTE_UNAVAILABLE", str(exc))
+            silent = decision.outcome == "ALLOW"
+            with self._lock:
+                refusal = reserve(session, total, silent=silent)
+            if refusal:
+                return self._refuse_execution(proposal, refusal, "session limit")
+            held = (total, silent)
+        outcome = "refused"
+        try:
+            response = self._approve_and_execute(session, proposal, decision, kept, codes)
+            outcome = {"executed": "executed", "unknown": "unknown"}.get(
+                response["status"], "refused"
+            )
+            return response
+        finally:
+            if held is not None:
+                with self._lock:
+                    settle(session, held[0], silent=held[1], outcome=outcome)
+
+    def _session_totals(self, session: Session) -> dict[str, int]:
+        with self._lock:
+            return {
+                "session_spent_paise": session.spent_paise + session.reserved_paise,
+                "session_silent_count": session.silent_count + session.silent_reserved,
+            }
+
+    def _limited(self, session: Session, proposal: ActionProposal) -> bool:
+        return proposal.tool == "checkout" and self.config != "none" and session.mandate is not None
+
+    def _decided_total(self, proposal: ActionProposal, decision: Decision, kept: dict) -> int:
+        """The decided quote's total, re-fetched and required to be the decided quote."""
+        q = self.connector.get_quote(str(kept["cart_id"]), str(kept["shipping_address_id"]))
+        if q.quote_hash != decision.quote_hash:
+            raise QuoteMoved
+        return q.total_paise
+
+    def _approve_and_execute(
+        self,
+        session: Session,
+        proposal: ActionProposal,
+        decision: Decision,
+        kept: dict,
+        codes: list[str],
+    ) -> dict[str, Any]:
 
         approval, expected = None, None
         if decision.outcome == "REVIEW":
@@ -398,6 +482,8 @@ class Gateway:
         if result.executed:
             shown = self._label_execution(session, proposal, result.result or {})
             response: dict[str, Any] = {"status": "executed", "reasons": [], "result": shown}
+            if proposal.tool == "checkout":  # D-055: the merchant's order, not a verified payment
+                response["settlement"] = "order_confirmed"
         elif result.uncertain:
             response = {"status": "unknown", "reasons": exec_codes}
         else:
@@ -411,6 +497,8 @@ class Gateway:
                     "executed": "unknown" if result.uncertain else result.executed,
                     "reasons": exec_codes,
                     "result": receipt_safe(result.result),
+                    **({"settlement": response["settlement"]} if "settlement" in response else {}),
+                    **({"reconciled": result.reconciled} if result.reconciled else {}),
                 },
             )
         except Exception:  # the merchant call already happened: report the truth, flag the gap

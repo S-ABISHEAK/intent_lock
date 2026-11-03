@@ -15,6 +15,7 @@ from urllib.parse import unquote, urlsplit
 from intentlock.models import ProvenanceRecord, Reason, TrustLabel
 from intentlock.policy.hard_rules import split_recipients
 from intentlock.policy.reasons import make_reason
+from intentlock.policy.tools import COMMIT_TOOLS
 from intentlock.provenance.labels import label_fields
 
 if TYPE_CHECKING:
@@ -323,7 +324,12 @@ def make_taint_step(ledger: "Ledger"):
                 continue
             seen.add(value)
             verdict = index.classify(value)
-            named = index.untrusted_sources(value)
+            # D-054: our own executed actions' confirmations echo the args we sent (e.g. the
+            # saved address); they stay untrusted (they clean nothing) but are not attacker text
+            named = tuple(
+                rid for rid in index.untrusted_sources(value)
+                if index.by_id[rid].tool not in COMMIT_TOOLS
+            )  # fmt: skip
             if verdict.status == "clean" and named and picked_field(field):
                 detail = f"{field}={value} is also named by untrusted content {list(named)}"
                 reasons.append(

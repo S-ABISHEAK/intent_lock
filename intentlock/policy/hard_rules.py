@@ -29,6 +29,15 @@ def _quote_rules(ctx: DecisionContext, mandate: Mandate, quote: Quote) -> list[R
                 f"total {quote.total_paise} > budget {mandate.budget_total_paise}",
             )
         )
+    spent = ctx.session_spent_paise  # D-054: the budget covers the whole session
+    budget = mandate.budget_total_paise
+    if budget is not None and spent and quote.total_paise <= budget < spent + quote.total_paise:
+        out.append(
+            make_reason(
+                "SESSION_BUDGET_EXCEEDED",
+                f"already {spent} + this {quote.total_paise} > budget {budget}",
+            )
+        )
     if quote.recurring and not mandate.allow_recurring:
         out.append(make_reason("RECURRING_NOT_ALLOWED", ",".join(r.sku for r in quote.recurring)))
     if mandate.allowed_seller_countries is not None:

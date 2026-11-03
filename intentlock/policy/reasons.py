@@ -20,12 +20,14 @@ REGISTRY: dict[str, tuple[Outcome, Source]] = {
     "ACTION_NOT_IN_MANDATE": ("DENY", "rule"),
     "QUOTE_UNAVAILABLE": ("DENY", "rule"),
     "BUDGET_EXCEEDED": ("DENY", "rule"),
+    "SESSION_BUDGET_EXCEEDED": ("DENY", "rule"),  # D-054: the budget is per session
     "RECURRING_NOT_ALLOWED": ("DENY", "rule"),
     "SELLER_NOT_ALLOWED": ("DENY", "rule"),
     "QUANTITY_EXCEEDED": ("DENY", "rule"),
     "UNREQUESTED_ADDON": ("DENY", "rule"),
     "RECIPIENT_NOT_ALLOWED": ("DENY", "rule"),
     "APPROVAL_REQUIRED": ("REVIEW", "rule"),
+    "AUTO_APPROVE_LIMIT_REACHED": ("REVIEW", "rule"),  # D-054: at most 3 silent purchases
     "REFURBISHED_ITEM": ("REVIEW", "rule"),  # D-050: condition is part of the user's intent
     "TAINTED_ARG": ("REVIEW", "taint"),
     "UNKNOWN_PROVENANCE": ("REVIEW", "taint"),
@@ -35,6 +37,7 @@ REGISTRY: dict[str, tuple[Outcome, Source]] = {
     "PRESELECTED_ADDON": ("REVIEW", "two_channel"),
     "QUANTITY_DISPLAY_MISMATCH": ("REVIEW", "two_channel"),  # D-053
     "ADDRESS_DISPLAY_MISMATCH": ("REVIEW", "two_channel"),  # D-053
+    "VISION_DOM_DISAGREE": ("REVIEW", "two_channel"),  # D-057: screenshot reading vs page text
     "RECURRING_MISMATCH": ("REVIEW", "two_channel"),
     "REFUND_POLICY_UNKNOWN": ("REVIEW", "two_channel"),
     "NON_REFUNDABLE": ("DENY", "two_channel"),

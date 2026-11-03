@@ -76,6 +76,7 @@ class ExecutionResult:
     reasons: list[Reason] = field(default_factory=list)
     result: dict[str, Any] | None = None
     uncertain: bool = False  # the merchant may have acted; reconcile before retrying
+    reconciled: str | None = None  # D-056: CONFIRMED / NOT_PLACED / CANCELLED / UNKNOWN
 
 
 def _refused(code: str, detail: str = "") -> ExecutionResult:
@@ -170,7 +171,13 @@ class ShopConnector:
         return quote
 
     def render_checkout(self, quote: Quote, *, timeout_s: float = 20.0) -> bytes:
-        """Full-page PNG of the quote's own checkout page on the shop (SPEC §11.1).
+        return self.render_checkout_evidence(quote, timeout_s=timeout_s)[0]
+
+    def render_checkout_evidence(
+        self, quote: Quote, *, timeout_s: float = 20.0
+    ) -> tuple[bytes, str]:
+        """Full-page PNG of the quote's own checkout page on the shop (SPEC §11.1), plus the
+        page's visible text from the same render (D-057).
 
         The browser never holds the key and never touches the network (invariant 8): the
         connector fetches the HTML itself (no redirects followed), and Chromium renders that HTML
@@ -209,7 +216,9 @@ class ShopConnector:
             page = context.new_page()
             context.on("page", lambda extra: extra is page or extra.close())  # no popups
             page.set_content(resp.text, timeout=timeout_s * 1000, wait_until="load")
-            return page.screenshot(full_page=True, type="png", timeout=timeout_s * 1000)
+            png = page.screenshot(full_page=True, type="png", timeout=timeout_s * 1000)
+            text = page.inner_text("body", timeout=timeout_s * 1000)  # hidden elements excluded
+            return png, text
         except Exception as exc:  # no browser detail
             raise ConnectorError(
                 f"checkout page could not be rendered: {type(exc).__name__}"
@@ -312,6 +321,8 @@ class ShopConnector:
                 return _refused("PAYLOAD_CHANGED", "shop refused: the cart moved before sending")
             if exc.status == 409:
                 return _refused("QUOTE_CHANGED", "shop refused a stale quote")
+            if exc.maybe_sent and tool == "checkout" and quote is not None:
+                return self._resolve_lost(quote, exc)  # D-056: ask, never retry
             if exc.maybe_sent:
                 return ExecutionResult(
                     executed=False,
@@ -319,6 +330,30 @@ class ShopConnector:
                     reasons=[make_reason("EXECUTION_FAILED", f"outcome unknown: {exc}")],
                 )
             return _refused("EXECUTION_FAILED", str(exc))
+
+    def reconcile(self, quote: Quote) -> tuple[str, dict[str, Any] | None]:
+        """D-056: what happened to this quote's order, by asking the merchant (no retry)."""
+        try:
+            order = self._request("GET", f"/orders/by-quote/{urlquote(quote.quote_id, safe='')}")
+        except ConnectorError as exc:
+            return ("NOT_PLACED", None) if exc.status == 404 else ("UNKNOWN", None)
+        if order.get("status") == "cancelled":
+            return "CANCELLED", order
+        if order.get("status") == "placed" and not order_mismatch(order, quote):
+            return "CONFIRMED", order
+        return "UNKNOWN", order
+
+    def _resolve_lost(self, quote: Quote, exc: ConnectorError) -> ExecutionResult:
+        state, order = self.reconcile(quote)
+        if state == "CONFIRMED":
+            return ExecutionResult(executed=True, result=order, reconciled=state)
+        detail = f"no answer ({exc}); merchant says {state.lower().replace('_', ' ')}"
+        return ExecutionResult(
+            executed=False,
+            uncertain=state == "UNKNOWN",
+            reasons=[make_reason("EXECUTION_FAILED", detail)],
+            reconciled=state,
+        )
 
     def _undo_order(self, order: Any, quote: Quote, problems: list[str]) -> ExecutionResult:
         """D-049: the confirmation differs from the approved quote. A merchant that disagrees with

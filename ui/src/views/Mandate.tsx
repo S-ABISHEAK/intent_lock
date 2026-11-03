@@ -27,9 +27,9 @@ function Highlighted({ text, spans }: { text: string; spans: string[] }) {
 }
 
 function Line({ line }: { line: ReadbackLine }) {
-  const icon = { grant: "✚", limit: "■", question: "?" }[line.kind] ?? "•";
+  const icon = { grant: "✚", limit: "■", question: "?", not_enforced: "⚠" }[line.kind] ?? "•";
   return (
-    <span>
+    <span className={line.kind === "not_enforced" ? "text-amber-700" : ""}>
       <span className="mr-2 text-slate-400">{icon}</span>
       {line.text}
       {line.span && <span className="ml-2 text-sm text-slate-500">“{line.span}”</span>}
