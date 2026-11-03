@@ -60,6 +60,7 @@ class OrderReq(BaseModel):
 class ShareReq(BaseModel):
     cart_id: str
     to: str
+    contents_hash: str | None = None  # D-051: refuse if the cart moved since approval
 
 
 class CartItemReq(BaseModel):
@@ -116,7 +117,7 @@ def create_app(store: Store, api_key: str) -> FastAPI:
 
     @app.post("/share_cart", dependencies=guarded)
     def share_cart(req: ShareReq) -> dict:
-        return store.share_cart(req.cart_id, req.to)
+        return store.share_cart(req.cart_id, req.to, req.contents_hash)
 
     @app.post("/send_email", dependencies=guarded)
     def send_email(req: EmailReq) -> dict:

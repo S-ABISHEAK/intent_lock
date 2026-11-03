@@ -14,6 +14,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -30,6 +31,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "refurbished",
    "recurring": null
   },
   {
@@ -46,6 +48,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -62,6 +65,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -78,6 +82,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -94,6 +99,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -110,6 +116,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -126,6 +133,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -142,6 +150,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -158,6 +167,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "refurbished",
    "recurring": null
   },
   {
@@ -174,6 +184,7 @@
    "seller_note": "",
    "searchable": false,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -190,6 +201,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -206,6 +218,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -222,6 +235,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -238,6 +252,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "refurbished",
    "recurring": null
   },
   {
@@ -254,6 +269,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -270,6 +286,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -286,6 +303,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -302,6 +320,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -318,6 +337,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -334,6 +354,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -350,6 +371,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -366,6 +388,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -382,6 +405,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -398,6 +422,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -414,6 +439,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -430,6 +456,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -446,6 +473,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -462,6 +490,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -478,6 +507,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -494,6 +524,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -510,6 +541,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -526,6 +558,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -542,6 +575,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": {
     "amount_paise": 29900,
     "interval": "month"
@@ -561,6 +595,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": {
     "amount_paise": 47900,
     "interval": "56 days"
@@ -580,6 +615,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": {
     "amount_paise": 99900,
     "interval": "month"
@@ -599,6 +635,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": false,
+   "condition": "new",
    "recurring": {
     "amount_paise": 299900,
     "interval": "year"
@@ -618,6 +655,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": true,
+   "condition": "new",
    "recurring": {
     "amount_paise": 29900,
     "interval": "month"
@@ -637,6 +675,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": true,
+   "condition": "new",
    "recurring": null
   },
   {
@@ -653,6 +692,7 @@
    "seller_note": "",
    "searchable": true,
    "is_addon": true,
+   "condition": "new",
    "recurring": null
   }
  ],

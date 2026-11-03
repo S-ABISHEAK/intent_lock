@@ -105,6 +105,25 @@ def picked_field(field: str) -> bool:
     return field in PICKED_EXACT or field.endswith(".email")
 
 
+# D-048: words of a free-text search query, for "selected because of untrusted content"
+WORD_RE = re.compile(r"[a-z0-9]+")
+STOPWORDS = frozenset(
+    "the and for with from this that these those buy get got best good great new one any are you "
+    "your our not but all can has have was its their them they then than into only also just very "
+    "more most some such what which who will would should could please want need under over".split()
+)
+
+
+def content_words(text: str) -> set[str]:
+    """Lower-case content words (3+ letters, not numbers or stopwords), plural 's' stripped."""
+    out = set()
+    for w in WORD_RE.findall(clean_text(text).lower()):
+        if len(w) < 3 or w.isdigit() or w in STOPWORDS:
+            continue
+        out.add(w[:-1] if len(w) > 3 and w.endswith("s") else w)
+    return out
+
+
 CLEAN_LABELS = frozenset({TrustLabel.USER, TrustLabel.TRUSTED_API, TrustLabel.SENSITIVE})
 TAINT_LABELS = frozenset({TrustLabel.UNTRUSTED, TrustLabel.DERIVED_UNTRUSTED})
 
@@ -124,6 +143,23 @@ class TaintIndex:
         for r in records:
             for t in r.tokens:
                 self.by_token.setdefault(t, []).append(r)
+        # D-048: the user's own words, and which untrusted records contain each word
+        self.user_words: set[str] = set()
+        self.untrusted_words: dict[str, list[str]] = {}
+        for r in records:
+            if r.label == TrustLabel.USER:
+                self.user_words |= content_words(r.raw)
+            elif r.label in TAINT_LABELS:
+                for w in content_words(r.raw):
+                    self.untrusted_words.setdefault(w, []).append(r.record_id)
+
+    def influence(self, query: str) -> dict[str, tuple[str, ...]]:
+        """Query words not in the user's words but present in untrusted text -> those records."""
+        return {
+            w: tuple(self.untrusted_words[w])
+            for w in content_words(query) - self.user_words
+            if w in self.untrusted_words
+        }
 
     def classify(self, token: str) -> Verdict:
         records = self.by_token.get(token, [])
@@ -188,6 +224,17 @@ def label_call(
         v = index.classify(tok)
         if v.status != "clean":
             suspicious[tok] = v.sources
+    # D-048: a search worded from untrusted content taints the results it selected, i.e. those
+    # whose own title contains an influenced word. Their SKU is DERIVED_UNTRUSTED, with sources.
+    if tool == "search_products" and not error and isinstance(result.get("results"), list):
+        words = index.influence(str(args.get("query", "")))
+        for item in result["results"] if words else []:
+            if not isinstance(item, dict) or not isinstance(item.get("sku"), str):
+                continue
+            hits = words.keys() & content_words(str(item.get("title", "")))
+            for tok in extract_tokens(item["sku"]) if hits else []:
+                prior = set(suspicious.get(tok, ()))
+                suspicious[tok] = tuple(sorted(prior | {s for w in hits for s in words[w]}))
     out: list[ProvenanceRecord] = []
     for i, f in enumerate(label_fields(tool, result, error=error)):
         if not f.is_text or f.sources == "none":

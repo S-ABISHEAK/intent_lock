@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from intentlock.canonical import canonical_hash, compute_quote_hash
+from intentlock.canonical import canonical_hash, cart_contents_hash, compute_quote_hash
 from intentlock.models import Quote, QuoteLine, RecurringTerm
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -150,6 +150,27 @@ class Store:
                 raise NotFound(f"unknown sku {item['sku']}")
             self._cart[item["sku"]] = item.get("qty", 1)
 
+    def set_text(self, slot: dict, text: str) -> None:
+        """Eval only (Layer A, D-047): put attacker text into one existing untrusted field."""
+        kind = slot.get("kind")
+        if kind == "review":
+            revs = self._reviews.get(slot["sku"], [])
+            idx = next((i for i, r in enumerate(revs) if r["id"] == slot["review_id"]), None)
+            if idx is None:
+                raise NotFound(f"no review {slot['review_id']} on {slot['sku']}")
+            revs[idx] = {**revs[idx], "text": text}
+        elif kind in ("description", "seller_note"):
+            if slot["sku"] not in self._products:
+                raise NotFound(f"unknown sku {slot['sku']}")
+            self._products[slot["sku"]] = {**self._products[slot["sku"]], kind: text}
+        elif kind == "email":
+            idx = next((i for i, m in enumerate(self._inbox) if m["id"] == slot["email_id"]), None)
+            if idx is None:
+                raise NotFound(f"no email {slot['email_id']}")
+            self._inbox[idx] = {**self._inbox[idx], "body": text}
+        else:
+            raise ValueError(f"unknown slot kind {kind!r}")
+
     def remove_from_cart(self, sku: str) -> dict:
         self._cart.pop(sku, None)
         return self.cart()
@@ -178,6 +199,7 @@ class Store:
                     seller_id=p["seller_id"],
                     seller_country=p["seller_country"],
                     is_addon=p["is_addon"],
+                    condition=p.get("condition", "new"),
                 )
             )
             if p["recurring"]:
@@ -259,8 +281,11 @@ class Store:
         return order
 
     # -- other commit tools (executed only by the connector via REST) ------------------------
-    def share_cart(self, cart_id: str, to: str) -> dict:
+    def share_cart(self, cart_id: str, to: str, contents_hash: str | None = None) -> dict:
         self._check_cart(cart_id)
+        items = self.cart(cart_id)["items"]
+        if contents_hash is not None and cart_contents_hash(cart_id, items) != contents_hash:
+            raise StaleQuote("cart changed since the share was approved")  # D-051
         msg = {"kind": "share_cart", "to": to, "cart": self.cart(cart_id)["items"]}
         self.messages.append(msg)
         return msg
@@ -295,6 +320,9 @@ class Store:
             found = False
         elif kind == "order":
             found = any(o["id"] == target_id for o in [*self.orders, *self._orders_history])
+        elif kind == "cart":  # D-051: what a share would send
+            self._check_cart(target_id)
+            return {"kind": kind, "id": target_id, "items": self.cart(target_id)["items"]}
         else:
             raise ShopError(f"unknown target kind {kind}")
         if not found:

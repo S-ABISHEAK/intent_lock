@@ -246,11 +246,12 @@ def test_approval_for_one_recipient_cannot_send_to_another(conn, nonces, store):
 
 
 def test_share_cart_and_cancel_order_execute(conn, nonces, store):
-    for p in (
-        make_proposal("share_cart", cart_id="c1", to="a@example.com"),
-        make_proposal("cancel_order", id="ORD-5001"),
+    contents = conn.cart_contents("c1")["contents_hash"]  # D-051: shares bind the cart contents
+    for p, bound in (
+        (make_proposal("share_cart", cart_id="c1", to="a@example.com"), contents),
+        (make_proposal("cancel_order", id="ORD-5001"), None),
     ):
-        d = decision("REVIEW", None)
+        d = decision("REVIEW", bound)
         assert run(conn, nonces, p, d, approved(p, d)).executed
     assert store.messages[0]["kind"] == "share_cart" and store.cancelled_orders == ["ORD-5001"]
 

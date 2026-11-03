@@ -18,6 +18,7 @@ class DecisionContext:
     config: str
     now: int
     quote: Quote | None = None
+    payload_hash: str | None = None  # share_cart: hash of the cart contents it would send (D-051)
     # SKUs the agent explicitly added with add_to_cart; supplied by the proxy (D-014)
     requested_skus: frozenset[str] = frozenset()
     # Rule-of-Two A/B flags from the proxy's session (SPEC §8); required by step 7

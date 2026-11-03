@@ -84,6 +84,7 @@ class QuoteLine(_Model):
     seller_id: str
     seller_country: str
     is_addon: bool = False
+    condition: Literal["new", "refurbished"] = "new"  # D-050
 
 
 class RecurringTerm(_Model):

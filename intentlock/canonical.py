@@ -55,3 +55,10 @@ def canonical_hash(obj: Any, exclude: Iterable[str] = ()) -> str:
 def compute_quote_hash(quote: Quote) -> str:
     """sha256 of canonical(quote minus quote_hash) (SPEC §5)."""
     return canonical_hash(quote, exclude={"quote_hash"})
+
+
+def cart_contents_hash(cart_id: str, items: Iterable[dict]) -> str:
+    """What a share_cart approval binds (D-051): the cart's items, order-independent."""
+    lines = sorted(({"sku": str(i["sku"]), "qty": int(i["qty"])} for i in items),
+                   key=lambda x: x["sku"])  # fmt: skip
+    return canonical_hash({"cart_id": cart_id, "items": lines})

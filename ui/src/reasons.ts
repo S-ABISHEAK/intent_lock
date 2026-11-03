@@ -14,6 +14,7 @@ export const REASONS: Record<string, { outcome: "ALLOW" | "REVIEW" | "DENY"; tex
   UNREQUESTED_ADDON: { outcome: "DENY", text: "Add-on line the agent never explicitly added to the cart" },
   RECIPIENT_NOT_ALLOWED: { outcome: "DENY", text: "Email/share recipient not in `allowed_recipients`" },
   APPROVAL_REQUIRED: { outcome: "REVIEW", text: "Mandate requires approval (total ≥ auto-approve limit, comms, destructive)" },
+  REFURBISHED_ITEM: { outcome: "REVIEW", text: "A quote line is refurbished, not new: never bought without the user seeing it (D-050)" },
   TAINTED_ARG: { outcome: "REVIEW", text: "A sensitive arg came only from untrusted content (detail: field, source record IDs)" },
   UNKNOWN_PROVENANCE: { outcome: "REVIEW", text: "A sensitive arg appears in no recorded source (fabricated)" },
   RULE_OF_TWO: { outcome: "REVIEW", text: "Session has A ∧ B ∧ C (`r2_session` config only)" },
@@ -27,6 +28,7 @@ export const REASONS: Record<string, { outcome: "ALLOW" | "REVIEW" | "DENY"; tex
   INJECTION_SUSPECTED: { outcome: "REVIEW", text: "An in-scope untrusted record scored ≥ 0.5 (detail: record ID, score)" },
   PIPELINE_ERROR: { outcome: "DENY", text: "An exception in any step (fail closed)" },
   QUOTE_CHANGED: { outcome: "DENY", text: "Re-fetched quote hash ≠ the decided/approved hash" },
+  PAYLOAD_CHANGED: { outcome: "DENY", text: "Shared cart contents changed after the decision/approval (D-051)" },
   APPROVAL_INVALID_SIGNATURE: { outcome: "DENY", text: "Signature doesn't verify with the approver public key" },
   APPROVAL_EXPIRED: { outcome: "DENY", text: "Approval past `expires_at`" },
   APPROVAL_MISMATCH: { outcome: "DENY", text: "Mandate, policy version, session, or tool differs from the approval" },
@@ -34,5 +36,6 @@ export const REASONS: Record<string, { outcome: "ALLOW" | "REVIEW" | "DENY"; tex
   APPROVAL_MISSING: { outcome: "DENY", text: "Execution of a REVIEW decision was attempted without a signed approval" },
   SESSION_REPLACED: { outcome: "DENY", text: "The session was replaced or ended while this action waited for approval" },
   EXECUTION_FAILED: { outcome: "DENY", text: "The merchant call failed after all checks passed (the nonce stays consumed)" },
+  EXECUTION_MISMATCH: { outcome: "DENY", text: "The merchant's order confirmation differs from the approved quote; the order is cancelled at once, or flagged unknown if the cancel fails (D-049)" },
   ALLOWED_IN_MANDATE: { outcome: "ALLOW", text: "Informational: all deterministic checks passed" },
 };

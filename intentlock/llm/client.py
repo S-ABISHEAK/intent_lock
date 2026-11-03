@@ -46,8 +46,10 @@ class LLMClient:
         base_url: str | None = None,
         api_key: str | None = None,
         default_model: str | None = None,
+        meter: Any = None,
     ) -> None:
         self.settings = settings
+        self.meter = meter  # optional SpendMeter (D-047): checked before, charged after each call
         self.default_model = default_model or settings.model_id
         self._client = client or openai.OpenAI(
             base_url=base_url or settings.model_base_url,
@@ -76,8 +78,13 @@ class LLMClient:
     def _create(self, **kwargs: Any) -> Any:
         """One API call, waiting out rate limits (honouring retry-after, capped)."""
         for attempt in range(RATE_LIMIT_RETRIES + 1):
+            if self.meter is not None:
+                self.meter.check()  # BudgetExceeded is an LLMError: never retried below
             try:
-                return self._client.chat.completions.create(**kwargs)
+                resp = self._client.chat.completions.create(**kwargs)
+                if self.meter is not None:
+                    self.meter.record(getattr(resp, "usage", None))
+                return resp
             except openai.RateLimitError as exc:
                 if attempt == RATE_LIMIT_RETRIES:
                     raise

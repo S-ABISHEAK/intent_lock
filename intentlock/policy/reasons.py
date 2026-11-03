@@ -26,6 +26,7 @@ REGISTRY: dict[str, tuple[Outcome, Source]] = {
     "UNREQUESTED_ADDON": ("DENY", "rule"),
     "RECIPIENT_NOT_ALLOWED": ("DENY", "rule"),
     "APPROVAL_REQUIRED": ("REVIEW", "rule"),
+    "REFURBISHED_ITEM": ("REVIEW", "rule"),  # D-050: condition is part of the user's intent
     "TAINTED_ARG": ("REVIEW", "taint"),
     "UNKNOWN_PROVENANCE": ("REVIEW", "taint"),
     "RULE_OF_TWO": ("REVIEW", "r2"),
@@ -39,12 +40,14 @@ REGISTRY: dict[str, tuple[Outcome, Source]] = {
     "INJECTION_SUSPECTED": ("REVIEW", "promptguard"),
     "PIPELINE_ERROR": ("DENY", "rule"),
     "QUOTE_CHANGED": ("DENY", "rule"),
+    "PAYLOAD_CHANGED": ("DENY", "rule"),  # D-051: share_cart contents moved
     "APPROVAL_INVALID_SIGNATURE": ("DENY", "rule"),
     "APPROVAL_EXPIRED": ("DENY", "rule"),
     "APPROVAL_MISMATCH": ("DENY", "rule"),
     "APPROVAL_REPLAYED": ("DENY", "rule"),
     "APPROVAL_MISSING": ("DENY", "rule"),
     "EXECUTION_FAILED": ("DENY", "rule"),
+    "EXECUTION_MISMATCH": ("DENY", "rule"),  # D-049: order confirmation != approved quote
     "SESSION_REPLACED": ("DENY", "rule"),
     "ALLOWED_IN_MANDATE": ("ALLOW", "rule"),
 }

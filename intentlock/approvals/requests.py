@@ -35,6 +35,10 @@ def bound_hash(proposal: ActionProposal, decision: Decision) -> str:
         if not decision.quote_hash:
             raise ValueError("a checkout approval needs the decided quote hash")
         return decision.quote_hash
+    if proposal.tool == "share_cart":  # D-051: the recipient AND what is shared
+        if not decision.quote_hash:
+            raise ValueError("a share approval needs the decided cart contents hash")
+        return canonical_hash({"action": action_hash(proposal), "contents": decision.quote_hash})
     return action_hash(proposal)
 
 

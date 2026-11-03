@@ -23,12 +23,12 @@ from pydantic import ValidationError
 
 from intentlock.approvals.requests import Binding
 from intentlock.approvals.verify import NonceStore, verify_approval
-from intentlock.canonical import compute_quote_hash
+from intentlock.canonical import cart_contents_hash, compute_quote_hash
 from intentlock.models import ActionProposal, Approval, Decision, Quote, Reason
 from intentlock.policy.reasons import make_reason
 from intentlock.policy.tools import sanitize_args
 
-TARGET_KINDS = ("address", "order")
+TARGET_KINDS = ("address", "order", "cart")
 CHECKOUT_VIEWPORT = {"width": 1280, "height": 1600}  # SPEC §11
 OFFLINE_ARGS = ["--proxy-server=http://127.0.0.1:9", "--proxy-bypass-list=<-loopback>"]
 
@@ -80,6 +80,27 @@ class ExecutionResult:
 
 def _refused(code: str, detail: str = "") -> ExecutionResult:
     return ExecutionResult(executed=False, reasons=[make_reason(code, detail)])
+
+
+def order_mismatch(order: Any, quote: Quote) -> list[str]:
+    """D-049: what in the merchant's order confirmation differs from the quote that was executed.
+    Missing fields count as different (fail closed)."""
+    if not isinstance(order, dict):
+        return ["no confirmation"]
+    want_lines = sorted((ln.sku, ln.qty, ln.unit_paise) for ln in quote.lines)
+    try:
+        got_lines = sorted(
+            (str(x["sku"]), int(x["qty"]), int(x["unit_paise"])) for x in order["lines"]
+        )
+    except (KeyError, TypeError, ValueError):
+        got_lines = None
+    checks = {
+        "quote_hash": order.get("quote_hash") == quote.quote_hash,
+        "total": order.get("total_paise") == quote.total_paise,
+        "shipping": order.get("shipping_address_id") == quote.shipping_address_id,
+        "lines": got_lines == want_lines,
+    }
+    return [name for name, ok in checks.items() if not ok]
 
 
 class ShopConnector:
@@ -206,6 +227,16 @@ class ShopConnector:
             raise ConnectorError(f"unknown target kind {kind!r}")
         return self._request("GET", f"/resolve/{kind}/{urlquote(target_id, safe='')}")
 
+    def cart_contents(self, cart_id: str) -> dict[str, Any]:
+        """What a share would send right now, and its hash (D-051). The hash is computed here
+        from the items, never taken from the shop."""
+        found = self.resolve_target("cart", cart_id)
+        items = found.get("items")
+        if not isinstance(items, list):
+            raise ConnectorError("shop returned no cart items")
+        clean = [{"sku": str(i["sku"]), "qty": int(i["qty"])} for i in items]
+        return {"items": clean, "contents_hash": cart_contents_hash(cart_id, clean)}
+
     # -- execution (SPEC §6.2) -----------------------------------------------------------------
     def execute(
         self,
@@ -239,6 +270,10 @@ class ShopConnector:
                     return _refused(
                         "QUOTE_CHANGED", "re-fetched quote differs from the decided one"
                     )
+            elif tool == "share_cart":
+                now_hash = self.cart_contents(str(args["cart_id"]))["contents_hash"]
+                if now_hash != decision.quote_hash:
+                    return _refused("PAYLOAD_CHANGED", "cart contents differ from the decided ones")
             elif tool == "delete_saved_address":
                 self.resolve_target("address", str(args["id"]))
             elif tool == "cancel_order":
@@ -260,8 +295,15 @@ class ShopConnector:
 
         # 4. call the merchant with the connector-held key
         try:
-            return ExecutionResult(executed=True, result=self._commit_call(tool, args, quote))
+            result = self._commit_call(tool, args, quote, contents_hash=decision.quote_hash)
+            if tool == "checkout" and quote is not None:
+                problems = order_mismatch(result, quote)
+                if problems:
+                    return self._undo_order(result, problems)
+            return ExecutionResult(executed=True, result=result)
         except ConnectorError as exc:
+            if exc.status == 409 and tool == "share_cart":
+                return _refused("PAYLOAD_CHANGED", "shop refused: the cart moved before sending")
             if exc.status == 409:
                 return _refused("QUOTE_CHANGED", "shop refused a stale quote")
             if exc.maybe_sent:
@@ -272,13 +314,33 @@ class ShopConnector:
                 )
             return _refused("EXECUTION_FAILED", str(exc))
 
-    def _commit_call(self, tool: str, args: dict[str, Any], quote: Quote | None) -> dict[str, Any]:
+    def _undo_order(self, order: dict[str, Any], problems: list[str]) -> ExecutionResult:
+        """D-049: the confirmation differs from the approved quote. Cancel at once; if that
+        fails, say the outcome is unknown rather than report it as safe."""
+        detail = "order confirmation differs from the approved quote: " + ", ".join(problems)
+        try:
+            self._request("POST", f"/orders/{urlquote(str(order.get('id', '')), safe='')}/cancel")
+        except ConnectorError as exc:
+            return ExecutionResult(
+                executed=False,
+                uncertain=True,
+                reasons=[make_reason("EXECUTION_MISMATCH", f"{detail}; cancel failed: {exc}")],
+            )
+        return _refused("EXECUTION_MISMATCH", f"{detail}; order cancelled")
+
+    def _commit_call(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        quote: Quote | None,
+        *,
+        contents_hash: str | None = None,
+    ) -> dict[str, Any]:
         if tool == "checkout" and quote is not None:
             return self._request("POST", "/orders", {"quote_id": quote.quote_id})
         if tool == "share_cart":
-            return self._request(
-                "POST", "/share_cart", {"cart_id": args["cart_id"], "to": args["to"]}
-            )
+            body = {"cart_id": args["cart_id"], "to": args["to"], "contents_hash": contents_hash}
+            return self._request("POST", "/share_cart", body)
         if tool == "send_email":
             body = {"to": args["to"], "subject": args["subject"], "body": args["body"]}
             return self._request("POST", "/send_email", body)

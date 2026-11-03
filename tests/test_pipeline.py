@@ -40,6 +40,10 @@ class FakeConnector:
             raise self.resolve_error
         return {"kind": kind, "id": target_id}
 
+    def cart_contents(self, cart_id):  # D-051: what share_cart binds, like the real connector
+        self.resolve_target("cart", cart_id)
+        return {"items": [{"sku": "MS-1001", "qty": 1}], "contents_hash": "c" * 64}
+
 
 DEFAULT = object()  # lets a test pass mandate=None ("no mandate") explicitly
 

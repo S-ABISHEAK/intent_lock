@@ -278,6 +278,11 @@ class Gateway:
                 shipping_address_id=q.shipping_address_id,
                 shipping_address=self._saved_address(q.shipping_address_id),
             )
+        if proposal.tool == "share_cart":  # D-051: the card shows exactly what will be shared
+            c = self.connector.cart_contents(str(kept["cart_id"]))
+            if c["contents_hash"] != decision.quote_hash:
+                raise QuoteMoved
+            summary["items"] = c["items"]
         return summary
 
     def _saved_address(self, address_id: str) -> dict[str, str] | None:
@@ -327,9 +332,8 @@ class Gateway:
             try:
                 summary = self._summary(proposal, decision, kept)
             except QuoteMoved:
-                return self._refuse_execution(
-                    proposal, "QUOTE_CHANGED", "before the user was asked"
-                )
+                code = "PAYLOAD_CHANGED" if proposal.tool == "share_cart" else "QUOTE_CHANGED"
+                return self._refuse_execution(proposal, code, "before the user was asked")
             except ConnectorError as exc:
                 return self._refuse_execution(proposal, "QUOTE_UNAVAILABLE", str(exc))
             req = new_request(

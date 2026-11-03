@@ -79,6 +79,9 @@ def step_fetch(ctx: DecisionContext, connector) -> tuple[DecisionContext, list[R
         if tool == "checkout":
             quote = connector.get_quote(args["cart_id"], args["shipping_address_id"])
             return DecisionContext(**{**ctx.__dict__, "quote": quote}), []
+        if tool == "share_cart":  # D-051: bind what would be shared, not just the recipient
+            h = connector.cart_contents(args["cart_id"])["contents_hash"]
+            return DecisionContext(**{**ctx.__dict__, "payload_hash": h}), []
         if tool == "delete_saved_address":
             connector.resolve_target("address", args["id"])
         elif tool == "cancel_order":
@@ -95,13 +98,18 @@ def step_approval(ctx: DecisionContext) -> list[Reason]:
     if ctx.proposal.tool == "checkout":
         if ctx.quote is None:
             raise ValueError("mandate approval needs the authoritative quote")
+        out = [
+            make_reason("REFURBISHED_ITEM", line.sku)  # D-050: never bought without being seen
+            for line in ctx.quote.lines
+            if line.condition != "new"
+        ]
         if ctx.quote.total_paise >= ctx.mandate.auto_approve_under_paise:
-            return [make_reason("APPROVAL_REQUIRED", f"total {ctx.quote.total_paise}")]
-        return []
+            out.append(make_reason("APPROVAL_REQUIRED", f"total {ctx.quote.total_paise}"))
+        return out
     return [make_reason("APPROVAL_REQUIRED", ctx.proposal.tool)]  # comms / destructive
 
 
-def _decision(proposal, config, reasons, quote) -> Decision:
+def _decision(proposal, config, reasons, quote, payload_hash=None) -> Decision:
     outcome = worst([outcome_of(r) for r in reasons])
     if outcome == "ALLOW" and config != "none":
         reasons = [make_reason("ALLOWED_IN_MANDATE")]
@@ -109,7 +117,7 @@ def _decision(proposal, config, reasons, quote) -> Decision:
         action_id=proposal.action_id,
         outcome=outcome,
         reasons=reasons,
-        quote_hash=quote.quote_hash if quote else None,
+        quote_hash=quote.quote_hash if quote else payload_hash,
         config=config if config in STEP_SETS else "intentlock",
     )
 
@@ -146,9 +154,9 @@ def _run_steps(proposal, mandate, config, connector, now, requested_skus, extra,
         return _decision(proposal, config, reasons, None)
     ctx, reasons = step_fetch(ctx, connector)
     if reasons:
-        return _decision(proposal, config, reasons, ctx.quote)
+        return _decision(proposal, config, reasons, ctx.quote, ctx.payload_hash)
     if 4 in steps and (reasons := hard_rules(ctx)):
-        return _decision(proposal, config, reasons, ctx.quote)
+        return _decision(proposal, config, reasons, ctx.quote, ctx.payload_hash)
 
     reasons = step_approval(ctx) if 5 in steps else []
     for n in MODEL_ASSISTED_STEPS:
@@ -163,7 +171,7 @@ def _run_steps(proposal, mandate, config, connector, now, requested_skus, extra,
         if any(outcome_of(r) == "ALLOW" for r in produced):
             raise ValueError(f"step {n} tried to ALLOW; model-assisted steps can only escalate")
         reasons = [*reasons, *produced]
-    return _decision(proposal, config, reasons, ctx.quote)
+    return _decision(proposal, config, reasons, ctx.quote, ctx.payload_hash)
 
 
 def decide(
