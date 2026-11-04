@@ -114,7 +114,11 @@ describe("policy and execution are separate", () => {
   it("EXECUTED only from executed: true", () => {
     expect(executionStatus(one([prop(A), dec(A, "ALLOW"), fin(A, true)]))).toBe("EXECUTED");
     expect(executionStatus(one([prop(A), dec(A, "ALLOW"), fin(A, "yes")]))).toBe("UNKNOWN");
-    expect(executionStatus(one([prop(A), dec(A, "ALLOW"), r("execution", { action_id: A, event: "started" })]))).toBe("PENDING");
+    expect(executionStatus(one([prop(A), dec(A, "ALLOW"), r("execution", { action_id: A, event: "started" })]))).toBe("UNKNOWN");
+  });
+  it("a merchant call that started with no recorded end is UNKNOWN, never 'not executed'", () => {
+    const s = one([prop(A), dec(A, "ALLOW"), r("execution", { action_id: A, event: "started" }), r("error", { action_id: A, error: "RuntimeError" })]);
+    expect(executionStatus(s)).toBe("UNKNOWN");
   });
   it("no decision receipt means no policy status", () => {
     expect(policyStatus(one([prop(A)]))).toBeNull();

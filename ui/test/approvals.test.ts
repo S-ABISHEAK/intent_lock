@@ -43,6 +43,10 @@ describe("cardView", () => {
     expect(v.notice).toMatch(/reconnect/i);
   });
 
+  it("a card without the gateway's summary (or a checkout without a total) is never actionable", () => {
+    expect(cardView({ now: 100, expiresAt: 160, fresh: true, phase: "pending", complete: false }).canAct).toBe(false);
+  });
+
   it("a card being submitted is not actionable", () => {
     expect(cardView({ now: 100, expiresAt: 160, fresh: true, phase: "submitting" }).canAct).toBe(false);
   });

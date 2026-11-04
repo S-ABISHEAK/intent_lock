@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 
 import { api, errorText, type Card } from "../api";
 import { cardFacts } from "../cardFacts";
@@ -150,28 +150,39 @@ export function ApprovalCard({ card, fresh, story }: { card: Card; fresh: boolea
   const [st, dispatch] = useReducer(cardReducer, initialCard);
   const [more, setMore] = useState(false);
   const s = card.summary ?? {};
-  const view = cardView({ now, expiresAt: card.request.expires_at, fresh, phase: st.phase });
   const tool = String(s.tool ?? card.request.action_tool);
+  // review LOW: never approve what the gateway didn't summarise (a checkout needs its total)
+  const complete = card.summary != null && (tool !== "checkout" || Number.isSafeInteger(s.total_paise));
+  const view = cardView({ now, expiresAt: card.request.expires_at, fresh, phase: st.phase, complete });
+  const inFlight = useRef(false); // review LOW: a double click sends one approval, not two
   // the decision receipt has each reason's detail; the summary only its codes
   const detailed: { code: string; detail?: string }[] =
     story?.decision?.payload?.reasons ?? (Array.isArray(s.reasons) ? s.reasons.map((code: string) => ({ code })) : []);
 
   const approve = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     dispatch({ type: "approve" });
     try {
       await api.approve(card.request); // sign at the approver, then hand the signature to the gateway
       dispatch({ type: "done", result: "approved" });
     } catch (e) {
       dispatch({ type: "error", message: errorText(e) });
+    } finally {
+      inFlight.current = false;
     }
   };
   const reject = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     dispatch({ type: "reject" });
     try {
       await api.reject(card.request.approval_id);
       dispatch({ type: "done", result: "rejected" });
     } catch (e) {
       dispatch({ type: "error", message: errorText(e) });
+    } finally {
+      inFlight.current = false;
     }
   };
 

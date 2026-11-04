@@ -38,10 +38,11 @@ function useHealth() {
 }
 
 function Status({ on, label }: { on: string | null; label: string }) {
-  const known = on === "on" || on === "off";
+  // "unavailable": switched on in .env, but Playwright or the model key is missing (the gateway says so)
+  const text = on === "on" || on === "off" ? on : on === "unavailable" ? "unavailable (needs Playwright and a model key)" : "unknown";
   return (
     <span className="inline-flex items-center gap-1 text-xs text-muted">
-      {label}: <span className={`font-semibold ${on === "on" ? "text-allow" : "text-ink"}`}>{known ? on : "unknown"}</span>
+      {label}: <span className={`font-semibold ${on === "on" ? "text-allow" : on === "unavailable" ? "text-review" : "text-ink"}`}>{text}</span>
     </span>
   );
 }

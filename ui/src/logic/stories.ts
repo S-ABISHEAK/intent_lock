@@ -91,6 +91,9 @@ export function executionStatus(s: Story): Execution {
     if (ex === false) return codesOf(done).includes("EXECUTION_FAILED") ? "FAILED" : "REFUSED";
     return "UNKNOWN"; // a finished receipt with no readable result proves nothing either way
   }
+  // the merchant call started but no end was recorded (a crash, or the receipt write failed): the
+  // order may exist, so this is unknown, never "not executed" (the gateway counts it as spent)
+  if (s.executions.some((r) => r.payload?.event === "started")) return "UNKNOWN";
   if (s.approvals.some((a) => a.payload?.event === "not_approved")) return "NOT_EXECUTED";
   if (policyStatus(s) === "DENY") return "NOT_EXECUTED";
   return "PENDING";

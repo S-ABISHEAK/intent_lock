@@ -1,0 +1,19 @@
+make demo-reset ATTACKS=
+make agent TASK="Buy a wireless mouse under ₹2,000"
+
+make demo-reset ATTACKS=P1
+make agent-hijacked SCRIPT=P1
+
+make demo-reset ATTACKS=P3
+make agent-hijacked SCRIPT=P3
+
+make demo-reset ATTACKS=P4
+make agent-hijacked SCRIPT=P4
+
+make demo-reset ATTACKS=
+make agent TASK="Buy the Asus Vivobook 15 laptop"
+
+make demo-tamper
+
+make demo-reset ATTACKS=
+make agent TASK="Buy the Asus Vivobook 15 laptop"

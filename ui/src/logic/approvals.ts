@@ -35,13 +35,15 @@ export type CardView = {
   notice: string | null;
 };
 
-export function cardView(p: { now: number; expiresAt: number; fresh: boolean; phase: Phase }): CardView {
+export function cardView(p: { now: number; expiresAt: number; fresh: boolean; phase: Phase; complete?: boolean }): CardView {
   const secondsLeft = Math.max(0, Math.floor(p.expiresAt - p.now));
   const idle = p.phase === "pending" || p.phase === "failed";
   let notice: string | null = null;
+  const complete = p.complete !== false;
   if (!p.fresh) notice = "Live verification unavailable: reconnect to act on this";
+  else if (!complete) notice = "The gateway's summary for this card is missing: it can't be approved here";
   else if (secondsLeft === 0 && idle) notice = "Expiry reached: verifying gateway status";
-  return { secondsLeft, canAct: idle && p.fresh && secondsLeft > 0, notice };
+  return { secondsLeft, canAct: idle && p.fresh && complete && secondsLeft > 0, notice };
 }
 
 // Freshness: after a disconnect, cards stay non-actionable until the gateway sends a new pending
