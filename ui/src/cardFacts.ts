@@ -54,3 +54,27 @@ export function checkoutTruth(s: any): CheckoutTruth | null {
     confirmation: "checked against this quote after you approve",
   };
 }
+
+// Channel 3, the merchant's order confirmation: execution evidence from the execution receipt.
+// It never claims a payment settled (D-055), and an unknown outcome is never shown as success.
+export type Evidence = { tone: "allow" | "review" | "deny" | "neutral"; text: string; note?: string };
+
+export function confirmationEvidence(status: string, codes: string[], reconciled: string | null | undefined): Evidence {
+  switch (status) {
+    case "EXECUTED":
+      return { tone: "allow", text: "Order confirmed by the merchant", note: "Payment settlement not independently verified" };
+    case "UNKNOWN":
+      return {
+        tone: "review",
+        text: "Outcome unknown",
+        note: reconciled ? `Reconciliation by order reference: ${reconciled}` : "The merchant's answer was lost; no reconciliation result",
+      };
+    case "REFUSED":
+    case "FAILED":
+      return { tone: "deny", text: `${status === "FAILED" ? "Failed" : "Refused"}: ${codes.join(", ") || "no code"}` };
+    case "NOT_EXECUTED":
+      return { tone: "neutral", text: "No order: the action was not executed" };
+    default:
+      return { tone: "neutral", text: "Checked against this quote after you approve" };
+  }
+}

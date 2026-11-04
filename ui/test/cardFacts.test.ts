@@ -2,7 +2,7 @@
 // and which line is refurbished (D-050), not only reason codes.
 import { describe, expect, it } from "vitest";
 
-import { cardFacts, checkoutTruth } from "../src/cardFacts";
+import { cardFacts, checkoutTruth, confirmationEvidence } from "../src/cardFacts";
 
 describe("cardFacts", () => {
   it("lists the exact items a share will send, with the recipient", () => {
@@ -64,5 +64,29 @@ describe("checkoutTruth", () => {
     const failed = checkoutTruth({ tool: "checkout", two_channel: "on", reasons: ["TWO_CHANNEL_UNAVAILABLE"] })!;
     expect(failed.screen.state).toBe("unavailable");
     expect(checkoutTruth({ tool: "checkout", reasons: [] })!.screen.state).toBe("off");
+  });
+});
+
+describe("confirmationEvidence (channel 3)", () => {
+  it("before execution, says when it will be checked", () => {
+    expect(confirmationEvidence("PENDING", [], null)).toEqual({ tone: "neutral", text: "Checked against this quote after you approve" });
+  });
+  it("executed: the merchant's order, never a verified payment", () => {
+    const e = confirmationEvidence("EXECUTED", [], null);
+    expect(e.tone).toBe("allow");
+    expect(e.text).toBe("Order confirmed by the merchant");
+    expect(e.note).toBe("Payment settlement not independently verified");
+  });
+  it("unknown is never green and names the reconciliation", () => {
+    const e = confirmationEvidence("UNKNOWN", ["EXECUTION_FAILED"], "NOT_PLACED");
+    expect(e.tone).toBe("review");
+    expect(e.text).toBe("Outcome unknown");
+    expect(e.note).toContain("NOT_PLACED");
+  });
+  it("refused names the code", () => {
+    expect(confirmationEvidence("REFUSED", ["QUOTE_CHANGED"], null)).toEqual({ tone: "deny", text: "Refused: QUOTE_CHANGED" });
+  });
+  it("not executed", () => {
+    expect(confirmationEvidence("NOT_EXECUTED", [], null).text).toBe("No order: the action was not executed");
   });
 });

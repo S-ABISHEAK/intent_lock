@@ -1,40 +1,109 @@
 @import "tailwindcss";
 
+/* IntentLock design tokens (docs/OVERVIEW.md §14.8). Status colours always pair with a word and
+   an icon; colour alone never carries meaning. */
 @theme {
-  --color-allow: #15803d;
-  --color-review: #b45309;
-  --color-deny: #b91c1c;
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --color-primary: #0064e0;
+  --color-primary-strong: #0050b5;
+  --color-primary-soft: #e7f0fd;
+  --color-ink: #1c2b33;
+  --color-muted: #5d6c7b;
+  --color-canvas: #f1f4f7;
+  --color-surface: #ffffff;
+  --color-sunken: #f7f8fa;
+  --color-line: #dadde1;
+
+  --color-allow: #1e7e34;
+  --color-allow-soft: #e8f4ea;
+  --color-review: #a15c00;
+  --color-review-soft: #fdf3e3;
+  --color-deny: #c62828;
+  --color-deny-soft: #fdeceb;
+  --color-neutral-soft: #eef1f4;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-primary: #4c9bff;
+    --color-primary-strong: #78b3ff;
+    --color-primary-soft: #14263d;
+    --color-ink: #e4e8ec;
+    --color-muted: #9aa7b4;
+    --color-canvas: #0f1418;
+    --color-surface: #182027;
+    --color-sunken: #131a20;
+    --color-line: #2c3741;
+    --color-allow: #5cc276;
+    --color-allow-soft: #15281b;
+    --color-review: #f0a43a;
+    --color-review-soft: #2d2213;
+    --color-deny: #ff7a7a;
+    --color-deny-soft: #321819;
+    --color-neutral-soft: #212b33;
+  }
 }
 
 body {
-  @apply bg-slate-50 text-slate-900 antialiased;
+  @apply bg-canvas font-sans text-ink antialiased;
+  font-feature-settings: "tnum" 1, "cv11" 1;
 }
 
 mark {
-  @apply rounded bg-amber-200 px-0.5 text-slate-900;
+  @apply rounded bg-review-soft px-0.5 text-ink ring-1 ring-review/40;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 
 @layer components {
   .btn {
-    @apply rounded bg-slate-900 px-4 py-1.5 font-medium text-white disabled:opacity-40;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary-strong disabled:cursor-not-allowed disabled:opacity-40;
   }
+  .btn-secondary,
   .btn-quiet {
-    @apply rounded border border-slate-300 bg-white px-3 py-1;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-md border border-line bg-surface px-3 py-1.5 text-sm font-medium text-ink hover:bg-sunken disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-approve {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-md bg-allow px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-md border border-deny bg-surface px-4 py-2 text-sm font-semibold text-deny hover:bg-deny-soft disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .card {
+    @apply rounded-lg border border-line bg-surface;
+  }
+  .label {
+    @apply text-xs font-semibold tracking-wide text-muted uppercase;
   }
   .tab {
-    @apply rounded px-3 py-1 text-slate-600 hover:bg-slate-200;
+    @apply rounded-md px-3 py-1.5 text-sm font-medium text-muted hover:bg-sunken hover:text-ink;
   }
   .tab-on {
-    @apply bg-slate-900 text-white hover:bg-slate-900;
+    @apply bg-primary-soft text-primary hover:bg-primary-soft hover:text-primary;
   }
   table.results {
-    @apply w-full border-collapse overflow-hidden rounded bg-white text-sm shadow-sm;
+    @apply w-full border-collapse overflow-hidden rounded-lg border border-line bg-surface text-sm;
   }
   table.results th,
   table.results td {
-    @apply border-b border-slate-200 px-3 py-2 text-left;
+    @apply border-b border-line px-3 py-2 text-left align-top;
   }
   table.results th {
-    @apply bg-slate-100 font-medium;
+    @apply bg-sunken text-xs font-semibold tracking-wide text-muted uppercase;
   }
+  code {
+    @apply font-mono text-[0.85em];
+  }
+}
+
+input,
+textarea,
+select {
+  background-color: var(--color-surface);
+  color: inherit;
 }

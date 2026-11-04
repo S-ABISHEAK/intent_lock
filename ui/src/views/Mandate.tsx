@@ -23,16 +23,16 @@ function Highlighted({ text, spans }: { text: string; spans: string[] }) {
     i = b;
   }
   out.push(text.slice(i));
-  return <p className="rounded border border-slate-200 bg-white p-3 leading-relaxed">{out}</p>;
+  return <p className="rounded border border-line bg-surface p-3 leading-relaxed">{out}</p>;
 }
 
 function Line({ line }: { line: ReadbackLine }) {
   const icon = { grant: "✚", limit: "■", question: "?", not_enforced: "⚠" }[line.kind] ?? "•";
   return (
-    <span className={line.kind === "not_enforced" ? "text-amber-700" : ""}>
-      <span className="mr-2 text-slate-400">{icon}</span>
+    <span className={line.kind === "not_enforced" ? "text-review" : ""}>
+      <span className="mr-2 text-muted">{icon}</span>
       {line.text}
-      {line.span && <span className="ml-2 text-sm text-slate-500">“{line.span}”</span>}
+      {line.span && <span className="ml-2 text-sm text-muted">“{line.span}”</span>}
     </span>
   );
 }
@@ -87,11 +87,11 @@ export default function Mandate({ onStarted }: { onStarted: (sessionId: string) 
   const open = (compiled?.clarifications.length ?? 0) > 0;
 
   return (
-    <div className="space-y-6">
-      <section className="space-y-2">
+    <div className="mx-auto max-w-3xl space-y-4">
+      <section className="card space-y-3 p-4">
         <h2 className="text-lg font-semibold">1. Tell the agent what it may do</h2>
         <textarea
-          className="h-24 w-full rounded border border-slate-300 p-3"
+          className="h-24 w-full rounded border border-line p-3"
           maxLength={2000}
           value={text}
           onChange={(e) => {
@@ -107,7 +107,7 @@ export default function Mandate({ onStarted }: { onStarted: (sessionId: string) 
       </section>
 
       {compiled && (
-        <section className="space-y-3">
+        <section className="card space-y-3 p-4">
           <h2 className="text-lg font-semibold">2. Check what IntentLock understood</h2>
           <Highlighted text={compiled.mandate.user_text} spans={grants.map((g) => g.span ?? "")} />
           <ul className="space-y-1">
@@ -118,7 +118,7 @@ export default function Mandate({ onStarted }: { onStarted: (sessionId: string) 
             ))}
           </ul>
           {compiled.issues.length > 0 && (
-            <div className="rounded border border-slate-200 bg-slate-100 p-3 text-sm">
+            <div className="rounded border border-line bg-sunken p-3 text-sm">
               <div className="font-medium">Not granted (your words don't say so):</div>
               <ul className="list-disc pl-5">
                 {compiled.issues.map((i, k) => (
@@ -131,13 +131,13 @@ export default function Mandate({ onStarted }: { onStarted: (sessionId: string) 
             </div>
           )}
           {open && (
-            <div className="space-y-2 rounded border border-amber-300 bg-amber-50 p-3">
+            <div className="space-y-2 rounded border border-review/40 bg-review-soft p-3">
               <div className="font-medium">Please answer before confirming:</div>
               {compiled.clarifications.map((q) => (
                 <label key={q} className="block text-sm">
                   {q}
                   <input
-                    className="mt-1 w-full rounded border border-slate-300 p-1"
+                    className="mt-1 w-full rounded border border-line p-1"
                     maxLength={500}
                     value={answers[q] ?? ""}
                     onChange={(e) => setAnswers({ ...answers, [q]: e.target.value })}
@@ -150,14 +150,14 @@ export default function Mandate({ onStarted }: { onStarted: (sessionId: string) 
             </div>
           )}
           {!open && grants.length > 0 && (
-            <div className="space-y-2 rounded border border-slate-300 bg-white p-3">
+            <div className="space-y-2 rounded border border-line bg-surface p-3">
               <div className="font-medium">Permissions beyond searching and reading — allow each one:</div>
               {grants.map((g) =>
                 g.field === "auto_approve_under_paise" ? (
                   <label key={g.field} className="block">
                     <Line line={g} />
                     <input
-                      className="mt-1 block w-48 rounded border border-slate-300 p-1"
+                      className="mt-1 block w-48 rounded border border-line p-1"
                       placeholder="type the amount to allow"
                       value={typed}
                       onChange={(e) => setTyped(e.target.value)}
@@ -190,9 +190,9 @@ export default function Mandate({ onStarted }: { onStarted: (sessionId: string) 
       )}
 
       {confirmed && (
-        <section className="space-y-2">
+        <section className="card space-y-3 p-4">
           <h2 className="text-lg font-semibold">3. The mandate the gateway will enforce</h2>
-          <ul className="space-y-1 rounded border border-green-300 bg-green-50 p-3">
+          <ul className="space-y-1 rounded border border-allow/40 bg-allow-soft p-3">
             {confirmed.readback.map((l, i) => (
               <li key={i}>
                 <Line line={l} />
@@ -200,12 +200,12 @@ export default function Mandate({ onStarted }: { onStarted: (sessionId: string) 
             ))}
           </ul>
           <button className="btn" disabled={busy} onClick={start}>
-            Start session
+            Start protected session
           </button>
         </section>
       )}
 
-      {error && <p className="rounded bg-red-50 p-2 text-sm text-deny">{error}</p>}
+      {error && <p className="rounded bg-deny-soft p-2 text-sm text-deny">{error}</p>}
     </div>
   );
 }

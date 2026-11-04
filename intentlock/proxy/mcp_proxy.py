@@ -296,6 +296,7 @@ class Gateway:
             "tool": proposal.tool,
             "args": receipt_safe(kept),
             "reasons": [r.code for r in decision.reasons],
+            "action_id": proposal.action_id,  # D-060: links the card to its proposal (UI only)
         }
         if proposal.tool == "checkout":
             q = self.connector.get_quote(str(kept["cart_id"]), str(kept["shipping_address_id"]))
@@ -455,7 +456,13 @@ class Gateway:
             )
             self.summaries[req.approval_id] = summary
             self.receipts.append(
-                "approval", {"event": "requested", "request": req.model_dump(), "summary": summary}
+                "approval",
+                {
+                    "event": "requested",
+                    "request": req.model_dump(),
+                    "summary": summary,
+                    "action_id": proposal.action_id,  # D-060: additive, never signed
+                },
             )
             try:
                 approval = self.waiter(req)
@@ -463,10 +470,22 @@ class Gateway:
                 self.summaries.pop(req.approval_id, None)
             if approval is None:
                 self.receipts.append(
-                    "approval", {"event": "not_approved", "approval_id": req.approval_id}
+                    "approval",
+                    {
+                        "event": "not_approved",
+                        "approval_id": req.approval_id,
+                        "action_id": proposal.action_id,
+                    },
                 )
                 return {"status": "not_approved", "reasons": codes}
-            self.receipts.append("approval", {"event": "signed", "approval": approval.model_dump()})
+            self.receipts.append(
+                "approval",
+                {
+                    "event": "signed",
+                    "approval": approval.model_dump(),
+                    "action_id": proposal.action_id,
+                },
+            )
             if (approval.approval_id, approval.nonce, approval.expires_at) != (
                 req.approval_id,
                 req.nonce,

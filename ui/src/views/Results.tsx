@@ -20,8 +20,8 @@ export default function Results() {
       .catch(() => setError("No results yet: run `make report`."));
   }, []);
 
-  if (error) return <p className="text-slate-500">{error}</p>;
-  if (!data) return <p className="text-slate-500">Loading…</p>;
+  if (error) return <p className="text-muted">{error}</p>;
+  if (!data) return <p className="text-muted">Loading…</p>;
   const g = data.layer_g?.summary?.configs;
   const e = data.layer_e?.summary ?? {};
 
@@ -30,9 +30,9 @@ export default function Results() {
       {g && (
         <section className="space-y-2">
           <h2 className="text-lg font-semibold">
-            Gateway cases (Layer G) <span className="text-sm font-normal text-slate-500">({data.layer_g.source})</span>
+            Gateway cases (Layer G) <span className="text-sm font-normal text-muted">({data.layer_g.source})</span>
           </h2>
-          <p className="text-sm text-slate-600">
+          <p className="text-sm text-muted">
             {g.none.attacks.n} attack and {g.none.benign.n} benign cases, expectations hash-locked before the
             run. An attack that reaches a prompt is stopped only because the simulated user declines it.
           </p>
@@ -76,17 +76,17 @@ export default function Results() {
         <section key={agent} className="space-y-2">
           <h2 className="text-lg font-semibold">
             Live agent runs — {agent}{" "}
-            <span className="text-sm font-normal text-slate-500">
+            <span className="text-sm font-normal text-muted">
               ({data.layer_e.sources[agent]}, {cov?.runs ?? "?"} runs)
             </span>
           </h2>
           {cov && !cov.complete && (
-            <p className="rounded bg-red-50 p-2 text-sm text-deny">
+            <p className="rounded bg-deny-soft p-2 text-sm text-deny">
               Incomplete: {cov.cells_filled} of {cov.cells} task × config cells. Not comparable and not a result.
             </p>
           )}
           {resisted && (
-            <p className="rounded bg-amber-50 p-2 text-sm">
+            <p className="rounded bg-review-soft p-2 text-sm">
               No attack succeeded even without a gateway, so this agent resisted the injections itself and
               attack success does not compare the configs here. Attack blocking is measured on the gateway
               cases above.
@@ -119,7 +119,7 @@ export default function Results() {
               })}
             </tbody>
           </table>
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-muted">
             Guarded configs ask before a purchase above the auto-approve limit, and the simulated user declines
             every prompt on attack tasks, so the user's own purchase fails there too. The none baseline still
             shows the agent trust labels on tool results.
@@ -134,9 +134,9 @@ export default function Results() {
           <section className="space-y-2">
             <h2 className="text-lg font-semibold">
               Checkout Truth Engine (Layer V){" "}
-              <span className="text-sm font-normal text-slate-500">({data.layer_v.source})</span>
+              <span className="text-sm font-normal text-muted">({data.layer_v.source})</span>
             </h2>
-            <p className={v.pilot ? "font-semibold text-deny" : "text-sm text-slate-600"}>{v.title}</p>
+            <p className={v.pilot ? "font-semibold text-deny" : "text-sm text-muted"}>{v.title}</p>
             <table className="text-sm">
               <tbody>
                 {v.rows.map(([k, val]) => (
@@ -147,7 +147,7 @@ export default function Results() {
                 ))}
               </tbody>
             </table>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-muted">
               Misleading checkout pages, each item under the auto-approve limit: without the screenshot check
               every one would have been bought with no card. Outcomes are the shop's order records.
             </p>
@@ -159,10 +159,10 @@ export default function Results() {
         <section className="space-y-2">
           <h2 className="text-lg font-semibold">
             Prompt Guard 2 fine-tune{" "}
-            <span className="text-sm font-normal text-slate-500">({data.layer_pg.source})</span>
+            <span className="text-sm font-normal text-muted">({data.layer_pg.source})</span>
           </h2>
           <table className="text-sm">
-            <thead className="text-left text-slate-500">
+            <thead className="text-left text-muted">
               <tr>
                 <th className="pr-6">Split</th>
                 <th className="pr-6">Stock</th>
@@ -179,7 +179,7 @@ export default function Results() {
               ))}
             </tbody>
           </table>
-          <p className="text-xs text-slate-500">A classifier result on held-out data; no gateway number uses it.</p>
+          <p className="text-xs text-muted">A classifier result on held-out data; no gateway number uses it.</p>
         </section>
       )}
     </div>
