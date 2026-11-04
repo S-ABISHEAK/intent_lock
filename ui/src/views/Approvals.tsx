@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { api, errorText, type Card } from "../api";
-import { cardFacts } from "../cardFacts";
+import { cardFacts, checkoutTruth } from "../cardFacts";
 import { rupees } from "../money";
 import { ReasonList } from "./Badge";
 
@@ -23,6 +23,7 @@ function CardView({ card }: { card: Card }) {
   const [error, setError] = useState("");
   const s = card.summary ?? {};
   const facts = cardFacts(s);
+  const truth = checkoutTruth(s);
   const left = Math.max(0, Math.floor(card.request.expires_at - now));
 
   const act = async (f: () => Promise<unknown>) => {
@@ -108,6 +109,28 @@ function CardView({ card }: { card: Card }) {
               {s.shipping_address_id} is not one of your saved addresses
             </span>
           )}
+        </div>
+      )}
+
+      {truth && (
+        <div className="grid grid-cols-3 gap-2 rounded border border-slate-200 p-2 text-xs">
+          <div>
+            <div className="font-semibold">Quote</div>
+            <div className="text-allow">✓ merchant's own quote</div>
+          </div>
+          <div>
+            <div className="font-semibold">Screen</div>
+            {truth.screen.state === "matches" && <div className="text-allow">✓ page matches the quote</div>}
+            {truth.screen.state === "flagged" && (
+              <div className="text-deny">✗ {truth.screen.codes.join(", ")}</div>
+            )}
+            {truth.screen.state === "off" && <div className="text-slate-500">not checked (off)</div>}
+            {truth.screen.state === "unavailable" && <div className="text-review">couldn't be read</div>}
+          </div>
+          <div>
+            <div className="font-semibold">Confirmation</div>
+            <div className="text-slate-600">{truth.confirmation}</div>
+          </div>
         </div>
       )}
 

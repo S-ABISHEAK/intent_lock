@@ -309,6 +309,7 @@ class Gateway:
                 recurring=[r.model_dump(mode="json") for r in q.recurring],
                 shipping_address_id=q.shipping_address_id,
                 shipping_address=self._saved_address(q.shipping_address_id),
+                two_channel=self.two_channel_status,  # for the card's checkout-truth panel
             )
         if proposal.tool == "share_cart":  # D-051: the card shows exactly what will be shared
             c = self.connector.cart_contents(str(kept["cart_id"]))

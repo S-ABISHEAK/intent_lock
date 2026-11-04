@@ -238,3 +238,9 @@ def test_an_exception_after_the_merchant_call_keeps_the_reservation(tmp_path, mo
     with pytest.raises(RuntimeError):
         gw._run_reserved(session, held, sent, boom)
     assert session.spent_paise == 149_900 and session.reserved_paise == 0
+
+
+def test_a_checkout_card_says_whether_the_screenshot_check_ran(world):  # noqa: F811
+    """The UI's checkout-truth panel needs the step-8 status (D-059)."""
+    s = run_scenario(world, "intentlock", buy_again_and_again("LAP-1201", 1))  # needs a card
+    assert s.ui.cards[0]["summary"]["two_channel"] == "off"

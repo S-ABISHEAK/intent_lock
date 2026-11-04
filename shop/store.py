@@ -151,27 +151,6 @@ class Store:
                 raise NotFound(f"unknown sku {item['sku']}")
             self._cart[item["sku"]] = item.get("qty", 1)
 
-    def set_text(self, slot: dict, text: str) -> None:
-        """Eval only (Layer A, D-047): put attacker text into one existing untrusted field."""
-        kind = slot.get("kind")
-        if kind == "review":
-            revs = self._reviews.get(slot["sku"], [])
-            idx = next((i for i, r in enumerate(revs) if r["id"] == slot["review_id"]), None)
-            if idx is None:
-                raise NotFound(f"no review {slot['review_id']} on {slot['sku']}")
-            revs[idx] = {**revs[idx], "text": text}
-        elif kind in ("description", "seller_note"):
-            if slot["sku"] not in self._products:
-                raise NotFound(f"unknown sku {slot['sku']}")
-            self._products[slot["sku"]] = {**self._products[slot["sku"]], kind: text}
-        elif kind == "email":
-            idx = next((i for i, m in enumerate(self._inbox) if m["id"] == slot["email_id"]), None)
-            if idx is None:
-                raise NotFound(f"no email {slot['email_id']}")
-            self._inbox[idx] = {**self._inbox[idx], "body": text}
-        else:
-            raise ValueError(f"unknown slot kind {kind!r}")
-
     def remove_from_cart(self, sku: str) -> dict:
         self._cart.pop(sku, None)
         return self.cart()

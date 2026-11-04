@@ -92,6 +92,7 @@ make keys                        # approver Ed25519 key pair in keys/
 make dev                         # shop, approver, gateway, UI at http://127.0.0.1:5173
 make test                        # Python + UI tests
 make eval-g && make report       # Layer G, no API calls, ~10 s
+make eval-v ARGS=--pilot         # Layer V checkout pages, Muse vision (paid, spend-capped; set MODEL_PRICE_* first)
 ```
 
 `.env` needs `MODEL_API_KEY` (Meta Model API), and three random strings you generate: `SHOP_API_KEY`, `GATEWAY_OPERATOR_TOKEN`, `APPROVER_UI_TOKEN`. Optional: `HF_TOKEN` (gated Prompt Guard 2 weights; then `PROMPT_GUARD=on`), `TWO_CHANNEL=on`, and `WEAK_MODEL_*` for the baseline agent. `make doctor` says which names are set without printing values. Each service starts from an empty environment with only the variables it needs: the approver never sees the shop key, the gateway never sees the approver's private key, the agent sees neither.

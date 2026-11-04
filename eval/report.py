@@ -199,6 +199,70 @@ def latest(layer: str = "g", results_dir: Path = RESULTS_DIR) -> Path | None:
 
 
 UI_RESULTS = Path(__file__).resolve().parent.parent / "ui" / "public" / "results.json"
+LAYER_V_CASES = 54
+
+
+def layer_v_table(result: dict) -> str:
+    """Layer V, the Checkout Truth Engine (D-059): misleading checkout pages read by Muse."""
+    s = result["summary"]
+    run = s["cases_run"]
+    head = "Layer V (Checkout Truth Engine): misleading checkout pages, Muse vision on real renders"
+    if run < LAYER_V_CASES:
+        head += f": PILOT ({run} of {LAYER_V_CASES} cases), not a result"
+    out = [
+        head,
+        f"cases lock {result.get('cases_lock', '?')}, model {result.get('model', '?')}",
+        "",
+    ]
+    out += [
+        "| | Count |",
+        "|---|---|",
+        f"| Misleading pages stopped (no order placed) | {s['attacks_stopped']}/{s['attacks']} |",
+        f"| ... with the expected code | {s['attacks_with_expected_code']}/{s['attacks']} |",
+        f"| ... caught only by the page-text cross-check | {s['caught_only_by_dom_check']} |",
+        f"| Honest pages with a false alarm | {s['twin_false_alarms']}/{s['twins']} |",
+        f"| Honest pages bought with no card | {s['twins_ordered']}/{s['twins']} |",
+        f"| Vision latency p50 | {s['vision_seconds_p50']} s |",
+        "",
+        "| Category | Stopped | Expected code | Twin false alarms |",
+        "|---|---|---|---|",
+    ]
+    for name, c in sorted(s["by_category"].items()):
+        out.append(
+            f"| {name} | {c['stopped']}/{c['attacks']} | {c['expected_code']}/{c['attacks']} |"
+            f" {c['false_alarms']}/{c['twins']} |"
+        )
+    if s["errors"]:
+        out += ["", f"Errors (not scored): {[e['id'] for e in s['errors']]}"]
+    out += [
+        "",
+        "Every item is under the auto-approve limit: without the screenshot check each page would"
+        " have been bought with no card. Outcomes are the shop's order records.",
+    ]
+    return "\n".join(out)
+
+
+def pg_table(summary: dict) -> str:
+    """Prompt Guard 2, stock vs fine-tuned on commerce injections (D-046)."""
+    out = [
+        "Prompt Guard 2 fine-tune (classifier result; no Layer G/E number uses it)",
+        "",
+        "| Split | Model | Injections caught | False positives |",
+        "|---|---|---|---|",
+    ]
+    for split, models in summary["splits"].items():
+        for name, m in models.items():
+            caught = f"{m['detected']}/{m['injections']}" if m["injections"] else "-"
+            fp = f"{m['false_positives']}/{m['benign']}" if m["benign"] else "-"
+            out.append(f"| {split} | {name} | {caught} | {fp} |")
+    return "\n".join(out)
+
+
+def _latest_summary(layer: str, results_dir: Path) -> dict | None:
+    d = latest(layer, results_dir)
+    if d is None or not (d / "summary.json").exists():
+        return None
+    return {"source": d.name, "summary": json.loads((d / "summary.json").read_text())}
 
 
 def results_json(results_dir: Path = RESULTS_DIR) -> dict:
@@ -216,6 +280,8 @@ def results_json(results_dir: Path = RESULTS_DIR) -> dict:
             "summary": summarize(rows),
             "coverage": coverage(rows),
         },
+        "layer_v": _latest_summary("v", results_dir),
+        "layer_pg": _latest_summary("pg", results_dir),
     }
 
 
@@ -230,6 +296,12 @@ def main() -> int:
     if sources:
         print("\n" + ", ".join(f"{a}: {d}" for a, d in sources.items()) + "\n")
         print(layer_e_table(latest_e_rows()))
+    v = _latest_summary("v", RESULTS_DIR)
+    if v:
+        print(f"\n{v['source']}\n\n" + layer_v_table(v["summary"]))
+    pg = _latest_summary("pg", RESULTS_DIR)
+    if pg:
+        print(f"\n{pg['source']}\n\n" + pg_table(pg["summary"]))
     if UI_RESULTS.parent.is_dir():
         UI_RESULTS.write_text(json.dumps(results_json(), indent=1) + "\n")
         print(f"\n-> {UI_RESULTS}")

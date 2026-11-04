@@ -119,14 +119,9 @@ def run_one(
     env: Env,
     workdir: Path,
     samples: list[float],
-    *,
-    prepare=None,
-    run_id: str | None = None,
 ) -> dict:
     approver = SigningKey.generate()
     store = Store("http://placeholder", attacks=task["fixtures"])
-    if prepare is not None:  # Layer A (D-047): the attacker's text goes into one slot
-        prepare(store)
     shop_key = secrets.token_hex(16)
     prompts: list[dict] = []
     holder: dict[str, Gateway] = {}
@@ -142,7 +137,7 @@ def run_one(
         )
         return sign_request(req, approver) if task["benign"] else None
 
-    run_id = run_id or f"{task['id']}-{config}-{agent}-{run_idx}"
+    run_id = f"{task['id']}-{config}-{agent}-{run_idx}"
     error, run, start = None, None, time.perf_counter()
     before = len(samples)
     with serve(create_shop(store, shop_key)) as shop_url:

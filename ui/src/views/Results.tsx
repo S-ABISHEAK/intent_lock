@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { layerV, promptGuard } from "../extraResults";
+
 // Written by `make report` into ui/public/results.json (SPEC §13.4). Every rate shows its n.
 const CONFIGS = ["none", "r2_session", "intentlock"] as const;
 
@@ -126,6 +128,60 @@ export default function Results() {
         );
       })}
 
+      {layerV(data.layer_v) && (() => {
+        const v = layerV(data.layer_v)!;
+        return (
+          <section className="space-y-2">
+            <h2 className="text-lg font-semibold">
+              Checkout Truth Engine (Layer V){" "}
+              <span className="text-sm font-normal text-slate-500">({data.layer_v.source})</span>
+            </h2>
+            <p className={v.pilot ? "font-semibold text-deny" : "text-sm text-slate-600"}>{v.title}</p>
+            <table className="text-sm">
+              <tbody>
+                {v.rows.map(([k, val]) => (
+                  <tr key={k}>
+                    <td className="pr-6">{k}</td>
+                    <td className="font-semibold">{val}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-xs text-slate-500">
+              Misleading checkout pages, each item under the auto-approve limit: without the screenshot check
+              every one would have been bought with no card. Outcomes are the shop's order records.
+            </p>
+          </section>
+        );
+      })()}
+
+      {promptGuard(data.layer_pg) && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold">
+            Prompt Guard 2 fine-tune{" "}
+            <span className="text-sm font-normal text-slate-500">({data.layer_pg.source})</span>
+          </h2>
+          <table className="text-sm">
+            <thead className="text-left text-slate-500">
+              <tr>
+                <th className="pr-6">Split</th>
+                <th className="pr-6">Stock</th>
+                <th>Fine-tuned</th>
+              </tr>
+            </thead>
+            <tbody>
+              {promptGuard(data.layer_pg)!.map((r) => (
+                <tr key={r.split}>
+                  <td className="pr-6">{r.split}</td>
+                  <td className="pr-6">{r.stock}</td>
+                  <td className="font-semibold">{r.finetuned}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="text-xs text-slate-500">A classifier result on held-out data; no gateway number uses it.</p>
+        </section>
+      )}
     </div>
   );
 }
